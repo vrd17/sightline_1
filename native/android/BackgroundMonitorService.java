@@ -8,7 +8,9 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
-import android.media.Ringtone;
+import android.media.AudioAttributes;
+import android.media.AudioManager;
+import android.media.MediaPlayer;
 import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
@@ -62,7 +64,9 @@ import java.util.concurrent.Executors;
  */
 public class BackgroundMonitorService extends LifecycleService {
     public static final String CH_PERSIST = "sightline-foreground";
-    public static final String CH_ALERT   = "sightline-alerts";
+    // New id: channel settings can't be changed once created, and the old
+    // "sightline-alerts" channel may exist with lower importance on devices.
+    public static final String CH_ALERT   = "sightline-alarm";
     public static final int NOTIF_ID = 7788;
 
     public static volatile boolean RUNNING = false;
@@ -95,6 +99,17 @@ public class BackgroundMonitorService extends LifecycleService {
     private long lastAnalyze = 0, startedWall = 0, lastSample = 0, activatedAt = 0;
     private String lastPersistText = null; private long lastPersistAt = 0;
 
+    // alerts drawn over other apps + loud alarm
+    private static final long DIST_REPEAT_MS = 10000;   // re-sound while still too close
+    private static final long NO_FACE_HIDE_MS = 2000;   // face gone this long → drop the cover
+    private AlertOverlay overlay;
+    private MediaPlayer alarmPlayer;
+    private int savedAlarmVol = -1;
+    private final Runnable stopAlarmRunnable = this::stopAlarm;
+    private double lastCm = 0;
+    private long lastDistAlarm = 0;
+    private Long noFaceSince = null;
+
     // breach episode state
     private Long tooCloseSince = null; private boolean distNotified = false;
     private Long blinkLowSince = null; private boolean blinkNotified = false;
@@ -104,21 +119,15 @@ public class BackgroundMonitorService extends LifecycleService {
     private JSONArray breaches = new JSONArray();
     private JSONArray samples = new JSONArray();
 
-    @Override public void onCreate() { super.onCreate(); INSTANCE = this; }
+    @Override public void onCreate() { super.onCreate(); INSTANCE = this; overlay = new AlertOverlay(this); }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         super.onStartCommand(intent, flags, startId);
         String action = intent != null ? intent.getAction() : null;
 
-        if ("STOP".equals(action)) { stopSelf(); return START_NOT_STICKY; }
-
-        if (intent != null && intent.hasExtra("threshold")) {
-            configure(intent.getDoubleExtra("threshold", 35), intent.getDoubleExtra("approachHold", 5),
-                    intent.getDoubleExtra("safeBlink", 12), intent.getDoubleExtra("blinkHold", 15),
-                    intent.getDoubleExtra("refCm", 0), intent.getDoubleExtra("calK", 0),
-                    intent.getBooleanExtra("notif", true));
-        }
-
+        // startForeground must come first even when we are about to stop:
+        // a service started with startForegroundService() that never calls it
+        // crashes the app.
         createChannels();
         Notification persist = buildPersist(active ? "Watching eye distance" : "Monitoring ready");
         try {
@@ -126,15 +135,48 @@ public class BackgroundMonitorService extends LifecycleService {
                 startForeground(NOTIF_ID, persist, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
             else startForeground(NOTIF_ID, persist);
         } catch (Exception e) {
-            // e.g. camera permission revoked — can't run as a camera service
-            stopSelf(); return START_NOT_STICKY;
+            // e.g. camera permission revoked, or a restart from the background
+            stopNow(); return START_NOT_STICKY;
+        }
+
+        // Only an explicit start() from a live session arms the service. A null
+        // intent is a system restart after the app was killed — there is no
+        // session any more, so don't stay (and never open the camera).
+        boolean fromSession = intent != null && intent.hasExtra("threshold");
+        if ("STOP".equals(action) || (!fromSession && !RUNNING)) { stopNow(); return START_NOT_STICKY; }
+
+        if (fromSession) {
+            configure(intent.getDoubleExtra("threshold", 35), intent.getDoubleExtra("approachHold", 5),
+                    intent.getDoubleExtra("safeBlink", 12), intent.getDoubleExtra("blinkHold", 15),
+                    intent.getDoubleExtra("refCm", 0), intent.getDoubleExtra("calK", 0),
+                    intent.getBooleanExtra("notif", true));
         }
         RUNNING = true;
         if (startedWall == 0) startedWall = System.currentTimeMillis();
+        return START_NOT_STICKY;
+    }
 
-        if ("ACTIVATE".equals(action)) activate();
-        else if ("STANDBY".equals(action)) standby();
-        return START_STICKY;
+    /** User swiped Sightline away from recents: the session is gone with the
+     *  WebView, so release the camera and end the service. */
+    @Override public void onTaskRemoved(Intent rootIntent) {
+        stopNow();
+        super.onTaskRemoved(rootIntent);
+    }
+
+    /** Close the camera, clear alerts and end the service immediately. */
+    public void stopNow() {
+        RUNNING = false;
+        active = false;
+        main.post(() -> {
+            try { if (cameraProvider != null) cameraProvider.unbindAll(); } catch (Exception ignored) {}
+            if (overlay != null) overlay.hideAll();
+            stopAlarm();
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
+                else stopForeground(true);
+            } catch (Exception ignored) {}
+            stopSelf();
+        });
     }
 
     /** Update thresholds/calibration in place (no startForegroundService, which
@@ -159,7 +201,8 @@ public class BackgroundMonitorService extends LifecycleService {
         if (active) return;
         active = true; K = 0; rebinds = 0;
         activatedAt = System.currentTimeMillis();
-        tooCloseSince = null; distNotified = false;
+        tooCloseSince = null; distNotified = false; noFaceSince = null;
+        overlay.resetDismissed();
         blinkLowSince = null; blinkNotified = false; blinkClosed = false; blinkTimes.clear();
         lastPersistText = null;
         if (detector == null) {
@@ -209,6 +252,8 @@ public class BackgroundMonitorService extends LifecycleService {
         active = false;
         main.post(() -> {
             try { if (cameraProvider != null) cameraProvider.unbindAll(); } catch (Exception ignored) {}
+            overlay.hideAll();
+            stopAlarm();
             updatePersist("Paused (app in front)", true);
         });
     }
@@ -230,7 +275,13 @@ public class BackgroundMonitorService extends LifecycleService {
 
     private void handleFaces(List<Face> faces, long now, double maxDim) {
         if (!active) return;
-        if (faces == null || faces.isEmpty()) { updatePersist("No face in view", false); return; }
+        if (faces == null || faces.isEmpty()) {
+            if (noFaceSince == null) noFaceSince = now;
+            if (now - noFaceSince >= NO_FACE_HIDE_MS && overlay.distanceShowing()) { overlay.hideDistance(); stopAlarm(); }
+            updatePersist("No face in view", false);
+            return;
+        }
+        noFaceSince = null;
         Face face = faces.get(0);
 
         Double cm = null;
@@ -263,10 +314,19 @@ public class BackgroundMonitorService extends LifecycleService {
                 : Math.round(blinkTimes.size() / (elapsed / 60000.0));
 
         if (cm != null) {
+            lastCm = cm;
             if (cm < threshold) {
                 if (tooCloseSince == null) tooCloseSince = now;
                 if (now - tooCloseSince >= approachHoldMs && !distNotified) { distNotified = true; fireBreach("distance", now); }
-            } else if (cm > threshold + 4) { tooCloseSince = null; distNotified = false; }
+                else if (distNotified) {
+                    overlay.showDistance(cm, threshold);   // keep the cover up, live cm
+                    if (now - lastDistAlarm >= DIST_REPEAT_MS) { lastDistAlarm = now; alarmSound(4000); vibrate("distance"); }
+                }
+            } else if (cm > threshold + 4) {
+                tooCloseSince = null; distNotified = false;
+                overlay.resetDismissed();
+                if (overlay.distanceShowing()) { overlay.hideDistance(); stopAlarm(); }
+            }
         }
         if (rate != null) {
             if (rate < safeBlink) {
@@ -303,28 +363,65 @@ public class BackgroundMonitorService extends LifecycleService {
                 NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
                 Notification n = new NotificationCompat.Builder(this, CH_ALERT)
                         .setContentTitle(title).setContentText(text)
-                        .setSmallIcon(icon()).setPriority(NotificationCompat.PRIORITY_HIGH)
+                        .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
+                        .setSmallIcon(icon()).setPriority(NotificationCompat.PRIORITY_MAX)
                         .setCategory(NotificationCompat.CATEGORY_ALARM).setAutoCancel(true)
-                        .setDefaults(NotificationCompat.DEFAULT_ALL)
+                        .setColor(dist ? 0xFFC8141E : 0xFFE67800).setColorized(true)
+                        .setVibrate(new long[]{0, 400, 150, 400})
                         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                         .setContentIntent(openAppIntent()).build();
                 if (nm != null) nm.notify(dist ? NOTIF_ID + 1 : NOTIF_ID + 2, n);
             } catch (Exception ignored) {}
         }
-        alarmSound();
+        if ("distance".equals(type)) { overlay.showDistance(lastCm, threshold); lastDistAlarm = now; }
+        else overlay.showBlink(safeBlink);
+        alarmSound("distance".equals(type) ? 4000 : 2500);
         vibrate(type);
     }
 
-    private void alarmSound() {
+    /** Alarm-stream sound at full alarm volume (restored afterwards), so it is
+     *  heard over a video. Alarm volume is separate from media volume. */
+    private void alarmSound(long durMs) {
+        stopAlarm();
         try {
             Uri u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+            if (u == null) u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
             if (u == null) u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
-            final Ringtone r = RingtoneManager.getRingtone(getApplicationContext(), u);
-            if (r != null) {
-                r.play();
-                new Handler(Looper.getMainLooper()).postDelayed(() -> { try { r.stop(); } catch (Exception ignored) {} }, 1600);
+            if (u == null) return;
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                try {
+                    savedAlarmVol = am.getStreamVolume(AudioManager.STREAM_ALARM);
+                    am.setStreamVolume(AudioManager.STREAM_ALARM, am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0);
+                } catch (Exception e) { savedAlarmVol = -1; }   // e.g. Do Not Disturb policy
             }
-        } catch (Exception ignored) {}
+            MediaPlayer mp = new MediaPlayer();
+            mp.setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
+            mp.setDataSource(this, u);
+            mp.setLooping(true);
+            mp.prepare();
+            mp.start();
+            alarmPlayer = mp;
+            main.postDelayed(stopAlarmRunnable, durMs);
+        } catch (Exception e) { stopAlarm(); }
+    }
+
+    private void stopAlarm() {
+        main.removeCallbacks(stopAlarmRunnable);
+        if (alarmPlayer != null) {
+            try { alarmPlayer.stop(); } catch (Exception ignored) {}
+            try { alarmPlayer.release(); } catch (Exception ignored) {}
+            alarmPlayer = null;
+        }
+        if (savedAlarmVol >= 0) {
+            try {
+                AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                if (am != null) am.setStreamVolume(AudioManager.STREAM_ALARM, savedAlarmVol, 0);
+            } catch (Exception ignored) {}
+            savedAlarmVol = -1;
+        }
     }
 
     private void vibrate(String type) {
@@ -395,14 +492,19 @@ public class BackgroundMonitorService extends LifecycleService {
             c.setShowBadge(false); nm.createNotificationChannel(c);
         }
         if (nm.getNotificationChannel(CH_ALERT) == null) {
-            NotificationChannel c = new NotificationChannel(CH_ALERT, "Sightline alerts", NotificationManager.IMPORTANCE_HIGH);
-            c.setDescription("Distance & blink breach alerts");
+            NotificationChannel c = new NotificationChannel(CH_ALERT, "Sightline alarms", NotificationManager.IMPORTANCE_HIGH);
+            c.setDescription("Distance & blink breach alerts (pop up on screen)");
             c.enableVibration(true);
+            c.setVibrationPattern(new long[]{0, 400, 150, 400});
+            c.setSound(null, null);   // the service plays its own alarm-stream sound
+            c.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
             nm.createNotificationChannel(c);
         }
     }
 
     @Override public void onDestroy() {
+        stopAlarm();
+        if (overlay != null) overlay.hideAll();
         main.removeCallbacksAndMessages(null);
         try { if (cameraProvider != null) cameraProvider.unbindAll(); } catch (Exception ignored) {}
         try { if (detector != null) detector.close(); } catch (Exception ignored) {}

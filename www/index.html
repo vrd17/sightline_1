@@ -435,6 +435,23 @@ function bgConfig(){
   const calK = (cfg.calRefPx && cfg.calDistCm && vmax) ? cfg.calDistCm * cfg.calRefPx / vmax : 0;
   return { threshold:cfg.threshold, approachHold:cfg.approachHold, safeBlink:cfg.safeBlink, blinkHold:cfg.blinkHold, refCm, calK, notif:cfg.notif };
 }
+/* "Display over other apps" lets the native monitor show its alerts on top of a
+   fullscreen video. Returns true if the user was sent to Settings to grant it. */
+let overlayAsked=false;   // ask at most once per app launch
+async function ensureOverlayPermission(){
+  try{
+    if(!hasBg || !cfg.background || overlayAsked || !BackgroundMonitor.canDrawOverlays) return false;
+    const r = await BackgroundMonitor.canDrawOverlays();
+    if(r && r.granted) return false;
+    overlayAsked=true;
+    if(!confirm('To show big alerts on top of videos and other apps, allow Sightline to "Display over other apps".\n\nOpen settings now?')) return false;
+    await BackgroundMonitor.requestOverlayPermission();
+    return true;
+  }catch(e){ return false; }
+}
+// A fresh page has no session, so any monitor still running is left over
+// (e.g. the WebView was reloaded) — stop it so it can't hold the camera.
+if(hasBg){ BackgroundMonitor.isRunning().then(r=>{ if(r && r.running && !running) BackgroundMonitor.stop(); }).catch(()=>{}); }
 async function bgServiceStart(){ try{ if(hasBg && cfg.background){ await BackgroundMonitor.start(bgConfig()); } }catch(e){} }
 async function bgServiceStop(){ try{ if(hasBg){ await BackgroundMonitor.stop(); } bgActive=false; }catch(e){} }
 
@@ -630,6 +647,8 @@ function showBanner(txt, variant){
    monitor (Android) so distance/blink alerts keep firing while another app is
    fullscreen. On return, take the camera back and fold in what happened. */
 document.addEventListener('visibilitychange', async ()=>{
+  // calibration needs the user looking at the app — never keep the camera open behind it
+  if(document.hidden && currentMode==='cal'){ closeCalibration(); return; }
   if(!running || currentMode!=='session') return;
   if(document.hidden){
     camDot.className='dot paused';
@@ -641,6 +660,7 @@ document.addEventListener('visibilitychange', async ()=>{
       try{ await BackgroundMonitor.activate(conf); bgActive=true; }catch(e){}
       camStatus.textContent='Monitoring in background — native camera';
     } else {
+      try{ stopCamera(); }catch(e){}   // no background monitoring → release the camera; resumed on return
       camStatus.textContent='Paused — open Sightline again to keep guarding.';
       if(cfg.notif && !bgNotified){ bgNotified=true; notify('Sightline paused', 'Open Sightline again to keep watching distance and blinking.', 'sightline-bg'); }
     }
@@ -673,6 +693,7 @@ async function resumeCameraIfNeeded(){
 /* ---------- Session ---------- */
 async function startSession(){
   initAudio();
+  if(await ensureOverlayPermission()){ showBanner('Turn on "Display over other apps", then tap Start', 'info'); return; }
   startBtn.disabled=true; camStatus.textContent='Requesting camera…';
   try{
     if(cfg.notif){ await requestNotifPermission(); await setupNativeChannel(); }
@@ -926,6 +947,7 @@ $('#saveSettings').onclick=async()=>{
   if(hasBg && cfg.background && bgWasOff && BackgroundMonitor.requestBatteryExemption){
     try{ await BackgroundMonitor.requestBatteryExemption(); }catch(e){}
   }
+  if(cfg.background && !(hasBg && bgWasOff)) await ensureOverlayPermission();
   $('#settingsScrim').classList.remove('open'); showBanner('Configuration saved', 'info');
 };
 

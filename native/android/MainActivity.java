@@ -45,6 +45,17 @@ public class MainActivity extends BridgeActivity {
         if (BackgroundMonitorService.RUNNING && s != null) s.standby();
     }
 
+    /* The activity going away for good (back-out, swipe from recents) ends the
+       session with the WebView, so the camera service must not outlive it. */
+    @Override
+    public void onDestroy() {
+        if (isFinishing()) {
+            BackgroundMonitorService s = BackgroundMonitorService.INSTANCE;
+            if (s != null) s.stopNow();
+        }
+        super.onDestroy();
+    }
+
     private void requestStartupPermissions() {
         List<String> need = new ArrayList<>();
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)

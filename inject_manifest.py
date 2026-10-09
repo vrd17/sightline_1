@@ -18,6 +18,7 @@ PERMS = [
     '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
     '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />',
     '<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />',
+    '<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />',
     '<uses-feature android:name="android.hardware.camera" android:required="false" />',
     '<uses-feature android:name="android.hardware.camera.front" android:required="false" />',
 ]

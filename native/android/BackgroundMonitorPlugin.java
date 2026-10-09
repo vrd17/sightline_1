@@ -62,8 +62,8 @@ public class BackgroundMonitorPlugin extends Plugin {
             s.activate();
             call.resolve();
         } else {
-            try { Intent i = svc(); i.setAction("ACTIVATE"); startSvc(i); call.resolve(); }
-            catch (Exception e) { call.reject("bg-activate-failed: " + e.getMessage()); }
+            // No running service = no armed session; never start one from the background.
+            call.reject("bg-not-running");
         }
     }
 
@@ -85,10 +85,10 @@ public class BackgroundMonitorPlugin extends Plugin {
     @PluginMethod
     public void stop(PluginCall call) {
         try {
+            // Stop directly: startService() can be refused when the session ends
+            // while the app is in the background (e.g. the session timer).
             BackgroundMonitorService s = BackgroundMonitorService.INSTANCE;
-            if (s != null) s.standby();
-            Intent i = svc(); i.setAction("STOP");
-            getContext().startService(i);
+            if (s != null) s.stopNow();
             getContext().stopService(svc());
             call.resolve();
         } catch (Exception e) { call.reject("bg-stop-failed: " + e.getMessage()); }
@@ -113,8 +113,25 @@ public class BackgroundMonitorPlugin extends Plugin {
         } catch (Exception e) { call.reject("battery-exemption-failed: " + e.getMessage()); }
     }
 
-    private void startSvc(Intent i) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) getContext().startForegroundService(i);
-        else getContext().startService(i);
+    /** { granted } — "Display over other apps", needed to show alerts on top of a fullscreen video. */
+    @PluginMethod
+    public void canDrawOverlays(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("granted", AlertOverlay.canDraw(getContext()));
+        call.resolve(ret);
+    }
+
+    /** Opens the system "Display over other apps" page for Sightline. */
+    @PluginMethod
+    public void requestOverlayPermission(PluginCall call) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !AlertOverlay.canDraw(getContext())) {
+                Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getContext().getPackageName()));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+            }
+            call.resolve();
+        } catch (Exception e) { call.reject("overlay-permission-failed: " + e.getMessage()); }
     }
 }

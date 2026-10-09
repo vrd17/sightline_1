@@ -19,6 +19,7 @@ mkdir -p "$PKG_DIR" "$RES_DRAWABLE"
 rm -f "$PKG_DIR/ForegroundPlugin.java" "$PKG_DIR/SightlineForegroundService.java"
 cp native/android/BackgroundMonitorService.java "$PKG_DIR/"
 cp native/android/BackgroundMonitorPlugin.java  "$PKG_DIR/"
+cp native/android/AlertOverlay.java             "$PKG_DIR/"
 cp native/android/MainActivity.java             "$PKG_DIR/"
 cp native/android/ic_stat_eye.xml               "$RES_DRAWABLE/"
 
