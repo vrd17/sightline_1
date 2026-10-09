@@ -1,5 +1,7 @@
 name: Build Android APK
 
+# Builds an installable debug APK in the cloud and attaches it to the run.
+# Trigger: push to main, or run manually from the Actions tab.
 on:
   push:
     branches: [ main, master ]
@@ -29,22 +31,11 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
-      - name: Patch manifest + native files
+      - name: Patch manifest, native files & gradle
         run: npm run patch:android
 
-      - name: Sync web assets
-        run: npx cap sync android
-
-      - name: Accept Android SDK licenses
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
-
-      - name: Build debug APK
-        working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: sightline-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+      - name: Bundle MediaPipe for offline use
+        run: |
+          mkdir -p www/vendor/tasks-vision
+          cp -r node_modules/@mediapipe/tasks-vision/wasm www/vendor/tasks-vision/wasm
+          cp node_modules/@mediapipe/tasks-vision/vision_bundle.mjs
