@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0E1420" />
+<title>Sightline — Screen Distance Guardian</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0E1420; --bg-2:#131B29; --surface:#182333; --surface-2:#20304a; --line:#26344b;
+    --ink:#EAF0F8; --muted:#8D9BB4; --faint:#5B6980;
+    --safe:#49E0C5; --safe-dim:#1c5f57; --warn:#F4C15A; --alert:#FF6B6B; --alert-dim:#5a2330; --blue:#3b82f6;
+    --shadow:0 18px 50px -20px rgba(0,0,0,.7);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(120% 80% at 50% -10%, #17253b 0%, var(--bg) 55%) fixed;
+    color:var(--ink); font-family:'Inter',system-ui,sans-serif; -webkit-font-smoothing:antialiased;
+    overscroll-behavior:none;
+    padding:calc(env(safe-area-inset-top) + 14px) 16px calc(env(safe-area-inset-bottom) + 16px);
+    min-height:100dvh;
+  }
+  .app{max-width:520px;margin-inline:auto;width:100%}
+  h1,h2,.num{font-family:'Space Grotesk',sans-serif}
+
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+  .brand{display:flex;align-items:center;gap:10px}
+  .eye{width:30px;height:30px;flex:none}
+  .brand-name{font-family:'Space Grotesk';font-weight:600;font-size:18px;letter-spacing:.02em}
+  .brand-sub{font-size:11px;color:var(--faint);letter-spacing:.14em;text-transform:uppercase;margin-top:-2px}
+  .header-actions{display:flex;gap:10px}
+  .icon-btn{background:var(--surface);border:1px solid var(--line);color:var(--muted);width:42px;height:42px;border-radius:13px;display:grid;place-items:center;cursor:pointer;transition:.15s}
+  .icon-btn:active{transform:scale(.94)}
+  .icon-btn svg{width:20px;height:20px}
+
+  .gauge-wrap{position:relative;display:grid;place-items:center;margin:8px auto 6px}
+  .gauge{width:min(74vw,300px);height:min(74vw,300px);position:relative}
+  .gauge svg{transform:rotate(-90deg);width:100%;height:100%}
+  .track{fill:none;stroke:var(--line);stroke-width:14;stroke-linecap:round}
+  .prog{fill:none;stroke:var(--safe);stroke-width:14;stroke-linecap:round;transition:stroke-dashoffset .3s ease,stroke .4s ease;filter:drop-shadow(0 0 10px rgba(73,224,197,.4))}
+  .gauge-center{position:absolute;inset:0;display:grid;place-content:center;text-align:center;gap:2px}
+  .dist-num{font-size:64px;font-weight:600;line-height:.9;letter-spacing:-.02em}
+  .dist-unit{font-size:15px;color:var(--muted);font-weight:500;margin-top:2px}
+  .dist-state{font-size:12px;letter-spacing:.18em;text-transform:uppercase;font-weight:600;margin-top:6px;color:var(--safe)}
+  .dist-hint{font-size:12px;color:var(--faint);max-width:200px;margin:4px auto 0;line-height:1.4}
+
+  body.too-close .prog{stroke:var(--alert);filter:drop-shadow(0 0 14px rgba(255,107,107,.55))}
+  body.too-close .dist-state{color:var(--alert)}
+  body.warn-zone .prog{stroke:var(--warn);filter:drop-shadow(0 0 12px rgba(244,193,90,.45))}
+  body.warn-zone .dist-state{color:var(--warn)}
+  @keyframes breathe{0%,100%{box-shadow:inset 0 0 0 0 rgba(255,107,107,0)}50%{box-shadow:inset 0 0 90px 0 rgba(255,107,107,.16)}}
+  body.too-close{animation:breathe 1.6s ease-in-out infinite}
+  @media (prefers-reduced-motion:reduce){body.too-close{animation:none}.prog{transition:none}}
+
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:13px 12px;text-align:center}
+  .stat .k{font-size:11px;color:var(--faint);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px}
+  .stat .v{font-family:'Space Grotesk';font-size:22px;font-weight:600;line-height:1}
+  .stat .u{font-size:11px;color:var(--muted);margin-top:3px}
+  .stat.flag .v{color:var(--warn)}
+
+  .cam-row{display:flex;align-items:center;gap:11px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:10px 12px;margin-bottom:14px}
+  #video{width:52px;height:52px;border-radius:11px;object-fit:cover;transform:scaleX(-1);background:#000;flex:none;border:1px solid var(--line)}
+  .cam-txt{flex:1;min-width:0}
+  .cam-title{font-size:13px;font-weight:600}
+  .cam-status{font-size:12px;color:var(--muted);margin-top:1px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none;transition:.2s}
+  .dot.on{background:var(--safe);box-shadow:0 0 8px var(--safe)}
+  .dot.searching{background:var(--warn)}
+  .dot.paused{background:var(--muted)}
+
+  .actions{display:grid;gap:10px}
+  .btn{border:none;border-radius:15px;padding:15px;font-family:'Inter';font-size:15px;font-weight:600;cursor:pointer;transition:.15s;display:flex;align-items:center;justify-content:center;gap:8px}
+  .btn:active{transform:scale(.98)}
+  .btn-primary{background:linear-gradient(180deg,#57ecd1,#2fc2ac);color:#05201b;box-shadow:0 10px 30px -12px rgba(73,224,197,.6)}
+  .btn-stop{background:var(--alert-dim);color:#ffd8dd;border:1px solid #7a3543}
+  .btn-ghost{background:var(--surface);color:var(--ink);border:1px solid var(--line)}
+  .btn-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .btn svg{width:18px;height:18px}
+  .btn[disabled]{opacity:.45;pointer-events:none}
+
+  #banner{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 10px);transform:translate(-50%,-160%);background:var(--alert);color:#fff;padding:13px 18px;border-radius:14px;font-weight:600;font-size:14px;display:flex;align-items:center;gap:10px;z-index:60;box-shadow:var(--shadow);transition:transform .3s cubic-bezier(.2,.8,.2,1);max-width:92vw;width:max-content}
+  #banner.show{transform:translate(-50%,0)}
+  #banner.blink{background:var(--blue)}
+  #banner.info{background:var(--surface-2)}
+  #banner svg{width:20px;height:20px;flex:none}
+
+  .scrim{position:fixed;inset:0;background:rgba(6,10,17,.72);backdrop-filter:blur(6px);display:none;align-items:flex-end;justify-content:center;z-index:50}
+  .scrim.open{display:flex}
+  .sheet{background:var(--bg-2);border:1px solid var(--line);border-bottom:none;border-radius:22px 22px 0 0;width:100%;max-width:560px;max-height:90dvh;overflow:auto;padding:20px 18px calc(env(safe-area-inset-bottom) + 22px);box-shadow:var(--shadow);animation:rise .28s cubic-bezier(.2,.8,.2,1)}
+  @keyframes rise{from{transform:translateY(30px);opacity:.6}to{transform:translateY(0);opacity:1}}
+  .grab{width:38px;height:4px;border-radius:99px;background:var(--line);margin:0 auto 16px}
+  .sheet h2{font-size:19px;font-weight:600;margin:0 0 4px}
+  .sheet .sub{color:var(--muted);font-size:13px;margin:0 0 18px;line-height:1.5}
+
+  .field{margin-bottom:18px}
+  .field-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px}
+  .field label{font-size:14px;font-weight:600}
+  .field .val{font-family:'Space Grotesk';font-weight:600;color:var(--safe);font-size:15px}
+  .field .desc{font-size:12px;color:var(--faint);margin-top:7px;line-height:1.45}
+  input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:99px;background:var(--surface-2);outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:var(--safe);border:4px solid var(--bg-2);box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer}
+  input[type=range]::-moz-range-thumb{width:24px;height:24px;border-radius:50%;background:var(--safe);border:4px solid var(--bg-2);cursor:pointer}
+  .toggle{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-top:1px solid var(--line)}
+  .toggle .t-txt{font-size:14px;font-weight:600}
+  .toggle .t-desc{font-size:12px;color:var(--faint);margin-top:3px;max-width:230px;line-height:1.4}
+  .switch{width:50px;height:30px;border-radius:99px;background:var(--surface-2);position:relative;flex:none;cursor:pointer;transition:.2s;border:1px solid var(--line)}
+  .switch.on{background:var(--safe)}
+  .switch::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:.2s}
+  .switch.on::after{transform:translateX(20px)}
+
+  .cal-visual{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;text-align:center;margin-bottom:16px}
+  #calVideo{width:100%;max-width:200px;aspect-ratio:1;border-radius:14px;object-fit:cover;transform:scaleX(-1);background:#000;margin:0 auto}
+  .cal-read{font-family:'Space Grotesk';font-size:15px;color:var(--muted);margin-top:12px}
+  .cal-read b{color:var(--safe)}
+
+  /* report + history */
+  .sum-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:6px 0 14px}
+  .sum-card{background:var(--surface);border:1px solid var(--line);border-radius:15px;padding:14px}
+  .sum-card .k{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.07em}
+  .sum-card .v{font-family:'Space Grotesk';font-size:24px;font-weight:600;margin-top:5px}
+  .rcard{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:12px}
+  .rcard h3{font-size:13px;margin:0 0 2px;font-weight:600}
+  .rcard .rsub{font-size:11px;color:var(--faint);margin:0 0 10px;line-height:1.4}
+  .spark{width:100%;height:72px;display:block}
+  .rrow{display:flex;justify-content:space-between;font-size:11px;color:var(--faint);margin-top:6px}
+  .badge{display:inline-block;padding:5px 11px;border-radius:99px;font-size:12px;font-weight:700}
+  .badge.good{background:rgba(73,224,197,.16);color:var(--safe)}
+  .badge.ok{background:rgba(244,193,90,.16);color:var(--warn)}
+  .badge.bad{background:rgba(255,107,107,.16);color:var(--alert)}
+  .hist-item{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px;cursor:pointer;transition:.12s}
+  .hist-item:active{transform:scale(.99)}
+  .hist-meta{flex:1;min-width:0}
+  .hist-title{font-size:13px;font-weight:600}
+  .hist-sub{font-size:11px;color:var(--muted);margin-top:2px}
+  .hist-spark{width:92px;height:42px;flex:none;opacity:.9}
+  .empty{color:var(--faint);text-align:center;padding:34px 10px;font-size:13px;line-height:1.5}
+  .linkbtn{background:none;border:none;color:var(--safe);font-weight:600;font-size:13px;cursor:pointer;padding:8px 4px}
+  .linkbtn.danger{color:var(--alert)}
+
+  .foot{text-align:center;color:var(--faint);font-size:11px;margin-top:16px;line-height:1.5}
+  .hidden{display:none!important}
+
+  /* ---- Tablet / landscape responsive ---- */
+  @media (min-width:760px), (orientation:landscape) and (min-width:660px){
+    .app{max-width:920px}
+    .main-grid{display:grid;grid-template-columns:minmax(300px,1fr) minmax(300px,1fr);gap:34px;align-items:center}
+    .gauge{width:min(40vw,360px);height:min(40vw,360px)}
+    .col-side{align-self:center}
+  }
+  @media (min-width:760px){
+    .dist-num{font-size:76px}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+<header>
+  <div class="brand">
+    <svg class="eye" viewBox="0 0 24 24" fill="none">
+      <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" stroke="#49E0C5" stroke-width="1.7"/>
+      <circle cx="12" cy="12" r="3.2" stroke="#49E0C5" stroke-width="1.7"/>
+    </svg>
+    <div>
+      <div class="brand-name">Sightline</div>
+      <div class="brand-sub">Screen distance guardian</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <button class="icon-btn" id="openHistory" aria-label="History">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    </button>
+    <button class="icon-btn" id="openSettings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<div class="main-grid">
+  <div class="col-gauge">
+    <div class="gauge-wrap">
+      <div class="gauge">
+        <svg viewBox="0 0 200 200">
+          <circle class="track" cx="100" cy="100" r="86"/>
+          <circle class="prog" id="prog" cx="100" cy="100" r="86" stroke-dasharray="540.35" stroke-dashoffset="540.35"/>
+        </svg>
+        <div class="gauge-center">
+          <div class="dist-num"><span id="distNum">--</span></div>
+          <div class="dist-unit">cm from screen</div>
+          <div class="dist-state" id="distState">Idle</div>
+          <div class="dist-hint" id="distHint">Start a session to begin monitoring</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-side">
+    <div class="stats">
+      <div class="stat" id="blinkStat">
+        <div class="k">Blink rate</div>
+        <div class="v"><span id="blinkVal">--</span></div>
+        <div class="u">per min</div>
+      </div>
+      <div class="stat">
+        <div class="k">Session</div>
+        <div class="v"><span id="sessVal">0:00</span></div>
+        <div class="u">elapsed</div>
+      </div>
+      <div class="stat">
+        <div class="k">Breaches</div>
+        <div class="v"><span id="alertVal">0</span></div>
+        <div class="u">this session</div>
+      </div>
+    </div>
+
+    <div class="cam-row">
+      <video id="video" playsinline muted autoplay></video>
+      <div class="cam-txt">
+        <div class="cam-title">Front camera</div>
+        <div class="cam-status" id="camStatus">Camera off — on-device only, nothing is recorded</div>
+      </div>
+      <div class="dot" id="camDot"></div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="startBtn">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        Start session
+      </button>
+      <button class="btn btn-stop hidden" id="stopBtn">
+        <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        End session
+      </button>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="calBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4M17 12h4M12 3v4M12 17v4"/><circle cx="12" cy="12" r="3.5"/></svg>
+          Calibrate
+        </button>
+        <button class="btn btn-ghost" id="settingsBtn2">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          Configure
+        </button>
+      </div>
+    </div>
+
+    <div class="foot" id="calState">Not calibrated — calibrate once for accurate distance in cm.</div>
+  </div>
+</div>
+</div>
+
+<div id="banner">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+  <span id="bannerText">Too close — move back</span>
+</div>
+
+<!-- Settings -->
+<div class="scrim" id="settingsScrim">
+  <div class="sheet">
+    <div class="grab"></div>
+    <h2>Configure</h2>
+    <p class="sub">Tune the thresholds to your eyes and workspace. Saved on this device.</p>
+
+    <div class="field">
+      <div class="field-top"><label>Safe distance threshold</label><span class="val"><span id="thV">35</span> cm</span></div>
+      <input type="range" id="thR" min="20" max="60" step="1" value="35">
+      <div class="desc">A loud alert fires when your face is closer than this. ~40–50 cm minimum is recommended for screens.</div>
+    </div>
+
+    <div class="field">
+      <div class="field-top"><label>Distance alert delay</label><span class="val"><span id="apV">5</span> s</span></div>
+      <input type="range" id="apR" min="1" max="30" step="1" value="5">
+      <div class="desc">You must stay closer than the threshold this long before the alert sounds — ignores brief lean-ins.</div>
+    </div>
+
+    <div class="field">
+      <div class="field-top"><label>Safe blink rate</label><span class="val"><span id="blV">12</span> /min</span></div>
+      <input type="range" id="blR" min="5" max="25" step="1" value="12">
+      <div class="desc">Screens roughly halve blinking. Drop below this and you'll get a "blink &amp; look away" alert.</div>
+    </div>
+
+    <div class="field">
+      <div class="field-top"><label>Blink alert delay</label><span class="val"><span id="bhV">15</span> s</span></div>
+      <input type="range" id="bhR" min="5" max="60" step="5" value="15">
+      <div class="desc">How long your blink rate must stay below the safe rate before the alert sounds.</div>
+    </div>
+
+    <div class="field">
+      <div class="field-top"><label>Session duration</label><span class="val"><span id="ssV">30</span> min</span></div>
+      <input type="range" id="ssR" min="5" max="120" step="5" value="30">
+      <div class="desc">The session auto-ends after this long and shows a report — a built-in break cue.</div>
+    </div>
+
+    <div class="toggle">
+      <div><div class="t-txt">Sound &amp; notifications</div><div class="t-desc">Play the alarm tone and send a phone notification on every breach.</div></div>
+      <div class="switch on" id="notifSwitch"></div>
+    </div>
+
+    <div class="toggle">
+      <div><div class="t-txt">Keep running in background</div><div class="t-desc">Keeps the session alive behind other apps. Pair with split-screen so the camera stays visible.</div></div>
+      <div class="switch on" id="bgSwitch"></div>
+    </div>
+
+    <button class="btn btn-primary" id="saveSettings" style="margin-top:18px">Save configuration</button>
+  </div>
+</div>
+
+<!-- Calibration -->
+<div class="scrim" id="calScrim">
+  <div class="sheet">
+    <div class="grab"></div>
+    <h2>Calibrate distance</h2>
+    <p class="sub">Hold your phone or tablet at a comfortable, correct viewing distance — about arm's length — then capture. This teaches the app what "safe" looks like for your face.</p>
+
+    <div class="field" style="margin-bottom:14px">
+      <div class="field-top"><label>I'm holding it at</label><span class="val"><span id="calDistV">45</span> cm</span></div>
+      <input type="range" id="calDistR" min="30" max="70" step="1" value="45">
+      <div class="desc">Measure once with a tape for best accuracy, or trust arm's length ≈ 45 cm.</div>
+    </div>
+
+    <div class="cal-visual">
+      <video id="calVideo" playsinline muted autoplay></video>
+      <div class="cal-read" id="calRead">Looking for your face…</div>
+    </div>
+
+    <button class="btn btn-primary" id="captureBtn" disabled>Capture reference</button>
+    <button class="btn btn-ghost" id="calCancel" style="margin-top:10px">Cancel</button>
+  </div>
+</div>
+
+<!-- Session report (also used for history detail) -->
+<div class="scrim" id="reportScrim">
+  <div class="sheet report">
+    <div class="grab"></div>
+    <h2 id="reportTitle">Session complete</h2>
+    <p class="sub" id="reportLede">Here's how you did. Small habits protect your eyes over years.</p>
+    <div id="reportBody"></div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn btn-ghost" id="reportExport" style="flex:1">Export</button>
+      <button class="btn btn-primary" id="reportPrimary" style="flex:1">Done</button>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:6px">
+      <button class="linkbtn hidden" id="reportBack">‹ Back to history</button>
+      <button class="linkbtn danger hidden" id="reportDelete">Delete this session</button>
+    </div>
+  </div>
+</div>
+
+<!-- History -->
+<div class="scrim" id="historyScrim">
+  <div class="sheet">
+    <div class="grab"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <h2 style="margin:0">Session history</h2>
+      <button class="linkbtn danger hidden" id="clearHist">Clear all</button>
+    </div>
+    <p class="sub">Your recent sessions, newest first. Tap one for the full report.</p>
+    <div id="historyList"></div>
+    <button class="btn btn-ghost" id="historyClose" style="margin-top:8px">Close</button>
+  </div>
+</div>
+
+<script type="module">
+import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm";
+const MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+
+/* ---------- Config ---------- */
+const DEFAULTS = { threshold:35, approachHold:5, safeBlink:12, blinkHold:15, sessionMin:30, notif:true, background:true, calRefPx:null, calDistCm:45 };
+let cfg = load();
+function load(){ try{ return {...DEFAULTS, ...JSON.parse(localStorage.getItem('sightline')||'{}')}; }catch(e){ return {...DEFAULTS}; } }
+function save(){ try{ localStorage.setItem('sightline', JSON.stringify(cfg)); }catch(e){} }
+
+const $ = s => document.querySelector(s);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ---------- Native bridge (Capacitor, optional) ---------- */
+const Cap = window.Capacitor;
+const isNative = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
+const Plugins = (Cap && Cap.Plugins) || {};
+const LocalNotifications = Plugins.LocalNotifications;
+const Foreground = Plugins.Foreground; // custom foreground-service plugin (Android)
+
+async function requestNotifPermission(){
+  try{
+    if(isNative && LocalNotifications){ await LocalNotifications.requestPermissions(); return; }
+    if('Notification' in window && Notification.permission==='default'){ await Notification.requestPermission(); }
+  }catch(e){}
+}
+async function setupNativeChannel(){
+  try{
+    if(isNative && LocalNotifications && LocalNotifications.createChannel){
+      await LocalNotifications.createChannel({ id:'sightline-alerts', name:'Sightline alerts', description:'Distance & blink breach alerts', importance:5, sound:'default', vibration:true, visibility:1 });
+    }
+  }catch(e){}
+}
+function notify(title, body, tag){
+  try{
+    if(isNative && LocalNotifications){
+      LocalNotifications.schedule({ notifications:[{ id:Math.floor(Math.random()*1e6), title, body, channelId:'sightline-alerts', sound:'default', smallIcon:'ic_stat_eye', schedule:{ at:new Date(Date.now()+40) } }]});
+      return;
+    }
+    if('Notification' in window && Notification.permission==='granted'){ new Notification(title,{body,tag}); }
+  }catch(e){}
+}
+async function fgStart(){ try{ if(isNative && Foreground && cfg.background){ await Foreground.start({ title:'Sightline is guarding your eyes', text:'Monitoring screen distance & blink rate' }); } }catch(e){} }
+async function fgStop(){ try{ if(isNative && Foreground){ await Foreground.stop(); } }catch(e){} }
+
+/* ---------- Loud alarm (WebAudio) ---------- */
+let audioCtx=null;
+function initAudio(){ try{ audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)(); if(audioCtx.state==='suspended') audioCtx.resume(); }catch(e){} }
+function alarm(kind){
+  if(navigator.vibrate) navigator.vibrate(kind==='blink'?[200,100,200]:[250,120,250,120,250]);
+  if(!audioCtx) return;
+  const t0=audioCtx.currentTime;
+  const seq = kind==='blink' ? [[660,0],[880,0.16]] : [[880,0],[1175,0.17],[880,0.34]];
+  for(const [f,off] of seq){
+    const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+    o.type='square'; o.frequency.value=f;
+    g.gain.setValueAtTime(0.0001, t0+off);
+    g.gain.exponentialRampToValueAtTime(0.55, t0+off+0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0+off+0.15);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t0+off); o.stop(t0+off+0.17);
+  }
+}
+
+/* ---------- Elements ---------- */
+const video=$('#video'), calVideo=$('#calVideo');
+const distNum=$('#distNum'), distState=$('#distState'), distHint=$('#distHint'), prog=$('#prog');
+const blinkVal=$('#blinkVal'), sessVal=$('#sessVal'), alertVal=$('#alertVal'), blinkStat=$('#blinkStat');
+const camStatus=$('#camStatus'), camDot=$('#camDot'), calState=$('#calState');
+const startBtn=$('#startBtn'), stopBtn=$('#stopBtn');
+const banner=$('#banner'), bannerText=$('#bannerText');
+
+const CIRC = 2*Math.PI*86;
+const GAUGE_MIN=20, GAUGE_MAX=70;
+
+/* ---------- State ---------- */
+let landmarker=null, stream=null, running=false, rafId=null, wakeSentinel=null;
+let sessionStart=0, sessionTimer=null, lastVideoTime=-1, currentMode=null;
+let alerts=0;
+let blinkTimes=[], blinkClosed=false;
+let tooCloseSince=null, distEpisodeNotified=false;
+let blinkLowSince=null, blinkEpisodeNotified=false;
+let series=[], breachLog=[], curCm=null, curRate=null;
+let calCurrentPx=0, bgNotified=false;
+let currentReport=null;
+
+/* ---------- Model & camera ---------- */
+async function ensureModel(){
+  if(landmarker) return landmarker;
+  camStatus.textContent='Loading eye-tracking model…';
+  let vision;
+  try{ vision = await FilesetResolver.forVisionTasks(WASM); }
+  catch(e){ camStatus.textContent='Could not load the model. Check your internet connection and try again.'; throw e; }
+  const opts = (delegate)=>({ baseOptions:{ modelAssetPath:MODEL, delegate }, outputFaceBlendshapes:true, runningMode:"VIDEO", numFaces:1 });
+  try{
+    landmarker = await FaceLandmarker.createFromOptions(vision, opts("GPU"));
+  }catch(e){
+    // Many tablets (incl. Galaxy Tab S10 Lite) fail GPU delegate init in WebView — fall back to CPU.
+    try{ landmarker = await FaceLandmarker.createFromOptions(vision, opts("CPU")); }
+    catch(e2){ camStatus.textContent='Eye tracking could not start on this device.'; throw e2; }
+  }
+  return landmarker;
+}
+async function startCamera(target){
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user', width:{ideal:640}, height:{ideal:480} }, audio:false });
+  }catch(e){
+    // some tablets reject facingMode/resolution constraints — retry permissively
+    stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+  }
+  target.srcObject = stream; await target.play();
+}
+function camTrackLive(){ const t = stream && stream.getVideoTracks && stream.getVideoTracks()[0]; return !!(t && t.readyState==='live'); }
+function stopCamera(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } }
+
+/* ---------- Measurement ---------- */
+function eyePixelDist(lm, vw, vh){ const a=lm[33], b=lm[263]; return Math.hypot((a.x-b.x)*vw,(a.y-b.y)*vh); }
+function blinkScore(bs){ if(!bs) return 0; let l=0,r=0; for(const c of bs.categories){ if(c.categoryName==='eyeBlinkLeft')l=c.score; if(c.categoryName==='eyeBlinkRight')r=c.score; } return (l+r)/2; }
+function pxToCm(px){ if(!cfg.calRefPx) return null; return cfg.calDistCm * cfg.calRefPx / px; }
+
+/* ---------- Loop ---------- */
+function loop(){
+  if(!running) return;
+  rafId=requestAnimationFrame(loop);
+  const src = currentMode==='cal' ? calVideo : video;
+  if(!landmarker || src.readyState<2) return;
+  const now=performance.now();
+  if(src.currentTime===lastVideoTime) return;   // no new frame (also true while backgrounded)
+  lastVideoTime=src.currentTime;
+
+  let res; try{ res = landmarker.detectForVideo(src, now); }catch(e){ return; }
+
+  if(!res.faceLandmarks || res.faceLandmarks.length===0){
+    camDot.className='dot searching';
+    if(currentMode==='cal'){ $('#calRead').innerHTML='Looking for your face…'; $('#captureBtn').disabled=true; }
+    else if(running){ curCm=null; distState.textContent='No face'; distHint.textContent='Center your face in the camera view'; }
+    return;
+  }
+  camDot.className='dot on';
+  const lm=res.faceLandmarks[0];
+  const px=eyePixelDist(lm, src.videoWidth, src.videoHeight);
+
+  if(currentMode==='cal'){
+    calCurrentPx=px;
+    $('#calRead').innerHTML=`Face locked · eye span <b>${px.toFixed(0)}px</b>`;
+    $('#captureBtn').disabled=false;
+    return;
+  }
+
+  // session
+  const cm = pxToCm(px); curCm = cm;
+  updateGauge(cm);
+  const bScore = blinkScore(res.faceBlendshapes && res.faceBlendshapes[0]);
+  if(!blinkClosed && bScore>0.5){ blinkClosed=true; blinkTimes.push(now); }
+  else if(blinkClosed && bScore<0.3){ blinkClosed=false; }
+  curRate = updateBlink(now);
+  handleDistance(cm, now);
+  handleBlink(curRate, now);
+}
+
+function updateGauge(cm){
+  if(cm==null){
+    distNum.textContent='--'; distState.textContent='Calibrate'; distHint.textContent='Tap Calibrate to read distance in cm';
+    document.body.classList.remove('too-close','warn-zone'); prog.style.strokeDashoffset=CIRC*0.5; return;
+  }
+  distNum.textContent=Math.round(cm);
+  const frac=Math.min(1,Math.max(0,(cm-GAUGE_MIN)/(GAUGE_MAX-GAUGE_MIN)));
+  prog.style.strokeDashoffset = CIRC*(1-frac);
+  document.body.classList.remove('too-close','warn-zone');
+  if(cm < cfg.threshold){ document.body.classList.add('too-close'); distState.textContent='Too close'; distHint.textContent=`Under your ${cfg.threshold} cm limit — ease back`; }
+  else if(cm < cfg.threshold+8){ document.body.classList.add('warn-zone'); distState.textContent='Getting close'; distHint.textContent='A little more room is better'; }
+  else { distState.textContent='Good distance'; distHint.textContent='Nice — keep this spacing'; }
+}
+
+function updateBlink(now){
+  blinkTimes = blinkTimes.filter(t=> now-t <= 60000);
+  if(now-sessionStart < 12000){ blinkVal.textContent='…'; return null; }
+  let rate;
+  if(now-sessionStart >= 60000) rate = blinkTimes.length;
+  else rate = Math.round(blinkTimes.length / ((now-sessionStart)/60000));
+  blinkVal.textContent=rate;
+  blinkStat.classList.toggle('flag', rate < cfg.safeBlink);
+  return rate;
+}
+
+/* ---------- Breach engines ---------- */
+function handleDistance(cm, now){
+  if(cm==null) return;
+  if(cm < cfg.threshold){
+    if(tooCloseSince==null) tooCloseSince=now;
+    if((now-tooCloseSince)/1000 >= cfg.approachHold && !distEpisodeNotified){ distEpisodeNotified=true; breach('distance'); }
+  } else if(cm > cfg.threshold+4){ tooCloseSince=null; distEpisodeNotified=false; }
+}
+function handleBlink(rate, now){
+  if(rate==null) return;
+  if(rate < cfg.safeBlink){
+    if(blinkLowSince==null) blinkLowSince=now;
+    if((now-blinkLowSince)/1000 >= cfg.blinkHold && !blinkEpisodeNotified){ blinkEpisodeNotified=true; breach('blink'); }
+  } else if(rate >= cfg.safeBlink+2){ blinkLowSince=null; blinkEpisodeNotified=false; }
+}
+function breach(type){
+  alerts++; alertVal.textContent=alerts;
+  breachLog.push({ t: Math.round((performance.now()-sessionStart)/1000), type });
+  const msg = type==='distance'
+    ? { t:'Move away from your screen', b:`You've been closer than ${cfg.threshold} cm. Give your eyes some distance.`, banner:`Too close — move back`, cls:false }
+    : { t:'Blink and look away', b:`Your blink rate dropped below ${cfg.safeBlink}/min. Blink a few times and rest your eyes.`, banner:`Low blink rate — blink & rest`, cls:true };
+  showBanner(msg.banner, msg.cls?'blink':'');
+  alarm(type);
+  if(cfg.notif) notify(msg.t, msg.b, 'sightline-'+type);
+}
+
+let bannerTimer=null;
+function showBanner(txt, variant){
+  bannerText.textContent=txt;
+  banner.classList.remove('blink','info'); if(variant) banner.classList.add(variant);
+  banner.classList.add('show');
+  clearTimeout(bannerTimer);
+  bannerTimer=setTimeout(()=>banner.classList.remove('show'), 4200);
+}
+
+/* ---------- Background / visibility ---------- */
+document.addEventListener('visibilitychange', ()=>{
+  if(!running || currentMode!=='session') return;
+  if(document.hidden){
+    camDot.className='dot paused';
+    camStatus.textContent='Paused in background — keep Sightline on-screen (split-screen) to keep guarding.';
+    if(cfg.notif && !bgNotified){ bgNotified=true; notify('Sightline paused', 'Keep Sightline visible (try split-screen) so it can watch distance and blinking while your child uses other apps.', 'sightline-bg'); }
+  }else{
+    bgNotified=false;
+    camStatus.textContent='Monitoring · on-device · nothing recorded';
+    resumeCameraIfNeeded();
+  }
+});
+async function resumeCameraIfNeeded(){
+  if(running && currentMode==='session' && !camTrackLive()){
+    try{ stopCamera(); await startCamera(video); lastVideoTime=-1; }catch(e){}
+  }
+}
+
+/* ---------- Session ---------- */
+async function startSession(){
+  initAudio();
+  startBtn.disabled=true; camStatus.textContent='Requesting camera…';
+  try{
+    if(cfg.notif){ await requestNotifPermission(); await setupNativeChannel(); }
+    await ensureModel();
+    await startCamera(video);
+    await fgStart();
+    if('wakeLock' in navigator){ try{ wakeSentinel = await navigator.wakeLock.request('screen'); }catch(e){} }
+  }catch(e){
+    camStatus.textContent='Camera blocked or unavailable. Allow camera access, then tap Start.'; startBtn.disabled=false; await fgStop(); return;
+  }
+  running=true; currentMode='session'; sessionStart=performance.now(); lastVideoTime=-1;
+  alerts=0; blinkTimes=[]; series=[]; breachLog=[]; curCm=null; curRate=null; bgNotified=false;
+  tooCloseSince=null; distEpisodeNotified=false; blinkLowSince=null; blinkEpisodeNotified=false;
+  alertVal.textContent=0;
+  startBtn.classList.add('hidden'); stopBtn.classList.remove('hidden'); startBtn.disabled=false;
+  camStatus.textContent='Monitoring · on-device · nothing recorded';
+  clearInterval(sessionTimer); sessionTimer=setInterval(tickSession,1000);
+  loop();
+}
+function tickSession(){
+  const sec=Math.floor((performance.now()-sessionStart)/1000);
+  sessVal.textContent=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
+  series.push({ t: sec, cm: (curCm!=null && isFinite(curCm))? Math.round(curCm*10)/10 : null, rate: (curRate!=null && isFinite(curRate))? curRate : null });
+  if(sec >= cfg.sessionMin*60){ endSession(true); }
+}
+async function endSession(showReport){
+  running=false; currentMode=null; cancelAnimationFrame(rafId); clearInterval(sessionTimer); stopCamera();
+  try{ if(wakeSentinel){ await wakeSentinel.release(); wakeSentinel=null; } }catch(e){}
+  await fgStop();
+  camDot.className='dot';
+  startBtn.classList.remove('hidden'); stopBtn.classList.add('hidden');
+  camStatus.textContent='Camera off — on-device only, nothing is recorded';
+  distNum.textContent='--'; distState.textContent='Idle'; distHint.textContent='Start a session to begin monitoring';
+  document.body.classList.remove('too-close','warn-zone'); prog.style.strokeDashoffset=CIRC;
+  const sess = buildSession();
+  if(sess.durationSec >= 5) addToHistory(sess);   // skip trivially short sessions
+  if(showReport && sess.durationSec >= 5) openReport(sess, false);
+}
+
+/* ---------- Report model ---------- */
+function fmtDur(sec){ const m=Math.floor(sec/60), s=sec%60; return (m>0?m+'m ':'')+String(s).padStart(m>0?2:1,'0')+'s'; }
+function downsample(arr,max){ if(arr.length<=max) return arr; const step=arr.length/max; const out=[]; for(let i=0;i<max;i++) out.push(arr[Math.floor(i*step)]); return out; }
+function computeStats(ser, log, snap){
+  const dist = ser.map(p=>p.cm).filter(v=>v!=null && isFinite(v));
+  const blink = ser.map(p=>p.rate).filter(v=>v!=null && isFinite(v));
+  const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+  const distanceBreaches = log.filter(b=>b.type==='distance').length;
+  const blinkBreaches = log.filter(b=>b.type==='blink').length;
+  return {
+    avgDist:avg(dist), minDist:dist.length?Math.min(...dist):null, maxDist:dist.length?Math.max(...dist):null,
+    avgBlink:avg(blink), minBlink:blink.length?Math.min(...blink):null,
+    pctGood: dist.length? Math.round(100*dist.filter(v=>v>=snap.threshold).length/dist.length):null,
+    pctBlinkOk: blink.length? Math.round(100*blink.filter(v=>v>=snap.safeBlink).length/blink.length):null,
+    distanceBreaches, blinkBreaches, totalBreaches:distanceBreaches+blinkBreaches
+  };
+}
+function grade(st){
+  let score=100;
+  if(st.pctGood!=null) score -= (100-st.pctGood)*0.6;
+  if(st.pctBlinkOk!=null) score -= (100-st.pctBlinkOk)*0.3;
+  score -= st.totalBreaches*4;
+  score=clamp(Math.round(score),0,100);
+  let label='Needs work', cls='bad';
+  if(score>=80){ label='Great'; cls='good'; } else if(score>=55){ label='Good'; cls='ok'; }
+  return { score, label, cls };
+}
+function buildSession(){
+  const durationSec = Math.max(0, Math.round((performance.now()-sessionStart)/1000));
+  const snap = { threshold:cfg.threshold, safeBlink:cfg.safeBlink };
+  const st = computeStats(series, breachLog, snap);
+  return { id:'s'+Date.now(), date:new Date().toISOString(), durationSec, cfg:snap,
+    stats:st, grade:grade(st), series:downsample(series,180), breaches:breachLog.slice(-80) };
+}
+
+/* ---------- History storage ---------- */
+function loadHistory(){ try{ return JSON.parse(localStorage.getItem('sightline_history')||'[]'); }catch(e){ return []; } }
+function saveHistory(h){ try{ localStorage.setItem('sightline_history', JSON.stringify(h)); }catch(e){} }
+function addToHistory(sess){ const h=loadHistory(); h.unshift(sess); if(h.length>50) h.length=50; saveHistory(h); }
+
+/* ---------- Sparkline ---------- */
+function sparkline(points, o){
+  o=o||{}; const w=o.w||320, h=o.h||72, color=o.color||'#49E0C5', thColor='#8D9BB4';
+  const vals = points.filter(v=>v!=null && isFinite(v));
+  if(!vals.length) return `<svg class="spark" viewBox="0 0 ${w} ${h}"><text x="${w/2}" y="${h/2}" fill="#5B6980" font-size="11" text-anchor="middle" dominant-baseline="middle">no data yet</text></svg>`;
+  let mn = o.min!=null?o.min:Math.min(...vals), mx = o.max!=null?o.max:Math.max(...vals);
+  if(o.threshold!=null){ mn=Math.min(mn,o.threshold); mx=Math.max(mx,o.threshold); }
+  const pad=(mx-mn)*0.12||1; mn-=pad; mx+=pad; const range=(mx-mn)||1;
+  const n=points.length, X=i=> n<=1?0:(i/(n-1))*w, Y=v=> h-((v-mn)/range)*h;
+  let d='', started=false;
+  points.forEach((p,i)=>{ if(p==null||!isFinite(p)){ started=false; return; } d+=`${started?'L':'M'}${X(i).toFixed(1)} ${clamp(Y(p),2,h-2).toFixed(1)} `; started=true; });
+  let th='';
+  if(o.threshold!=null){ const ty=clamp(Y(o.threshold),2,h-2).toFixed(1); th=`<line x1="0" y1="${ty}" x2="${w}" y2="${ty}" stroke="${thColor}" stroke-width="1" stroke-dasharray="4 4" opacity="0.65" vector-effect="non-scaling-stroke"/>`; }
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${th}<path d="${d}" fill="none" stroke="${color}" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+/* ---------- Report rendering ---------- */
+function takeaway(st){
+  const bits=[];
+  if(st.pctGood!=null) bits.push(st.pctGood>=80 ? `Distance stayed good ${st.pctGood}% of the time.` : `Too close ${100-st.pctGood}% of the time — try moving the screen further away.`);
+  if(st.blinkBreaches>0) bits.push(`Blinking dipped low ${st.blinkBreaches} time${st.blinkBreaches>1?'s':''} — remember to blink and look away.`);
+  else if(st.pctBlinkOk!=null && st.pctBlinkOk>=80) bits.push('Blink rate stayed healthy.');
+  if(!bits.length) bits.push('Keep it up!');
+  return bits.join(' ');
+}
+function breachTimeline(sess){
+  if(!sess.breaches.length) return `<div style="font-size:12px;color:var(--safe)">No breaches — great session!</div>`;
+  const dur=sess.durationSec||1;
+  const dots=sess.breaches.map(b=>{ const x=clamp(100*b.t/dur,0,100); const c=b.type==='distance'?'var(--alert)':'var(--blue)'; return `<span style="position:absolute;left:${x}%;top:50%;width:9px;height:9px;border-radius:50%;background:${c};transform:translate(-50%,-50%);box-shadow:0 0 6px ${c}"></span>`; }).join('');
+  return `<div style="position:relative;height:22px;background:var(--surface-2);border-radius:99px">${dots}</div><div class="rrow"><span>0:00</span><span>${fmtDur(dur)}</span></div>`;
+}
+function renderReport(sess){
+  const st=sess.stats, g=sess.grade, d=new Date(sess.date);
+  const dateStr=d.toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  $('#reportBody').innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div>
+        <div style="font-size:12px;color:var(--faint)">${dateStr}</div>
+        <div style="font-size:15px;font-weight:600">${fmtDur(sess.durationSec)} session</div>
+      </div>
+      <span class="badge ${g.cls}">${g.label} · ${g.score}</span>
+    </div>
+    <div class="sum-grid">
+      <div class="sum-card"><div class="k">Avg distance</div><div class="v">${st.avgDist!=null?Math.round(st.avgDist)+' cm':'—'}</div></div>
+      <div class="sum-card"><div class="k">Avg blink rate</div><div class="v">${st.avgBlink!=null?Math.round(st.avgBlink)+'/min':'—'}</div></div>
+      <div class="sum-card"><div class="k">Time at safe distance</div><div class="v">${st.pctGood!=null?st.pctGood+'%':'—'}</div></div>
+      <div class="sum-card"><div class="k">Breach alerts</div><div class="v">${st.totalBreaches}</div></div>
+    </div>
+    <div class="rcard">
+      <h3>Distance over time</h3>
+      <div class="rsub">Dashed line = your ${sess.cfg.threshold} cm limit · range ${st.minDist!=null?Math.round(st.minDist):'–'}–${st.maxDist!=null?Math.round(st.maxDist):'–'} cm</div>
+      ${sparkline(sess.series.map(p=>p.cm),{color:'#49E0C5',threshold:sess.cfg.threshold})}
+    </div>
+    <div class="rcard">
+      <h3>Blink rate over time</h3>
+      <div class="rsub">Dashed line = your ${sess.cfg.safeBlink}/min safe rate${st.pctBlinkOk!=null?` · healthy ${st.pctBlinkOk}% of the time`:''}</div>
+      ${sparkline(sess.series.map(p=>p.rate),{color:'#3b82f6',threshold:sess.cfg.safeBlink})}
+    </div>
+    <div class="rcard">
+      <h3>Breach alerts</h3>
+      <div class="rsub">${st.distanceBreaches} distance · ${st.blinkBreaches} blink</div>
+      ${breachTimeline(sess)}
+    </div>
+    <div class="rcard">
+      <h3>Takeaway</h3>
+      <div class="rsub" style="margin:0;color:var(--muted);font-size:12.5px">${takeaway(st)}</div>
+    </div>`;
+}
+function openReport(sess, fromHistory){
+  currentReport=sess; renderReport(sess);
+  $('#reportTitle').textContent = fromHistory?'Session report':'Session complete';
+  $('#reportLede').textContent = fromHistory?'A look back at this session.':'Here\'s how you did. Small habits protect your eyes over years.';
+  $('#reportPrimary').textContent = fromHistory?'Close':'Done';
+  $('#reportBack').classList.toggle('hidden', !fromHistory);
+  $('#reportDelete').classList.toggle('hidden', !fromHistory);
+  $('#reportScrim').classList.add('open');
+}
+
+/* ---------- History UI ---------- */
+function openHistory(){ renderHistory(); $('#historyScrim').classList.add('open'); }
+function renderHistory(){
+  const h=loadHistory(), list=$('#historyList');
+  if(!h.length){ list.innerHTML='<div class="empty">No sessions yet.<br>Finish a session and it\'ll show up here.</div>'; $('#clearHist').classList.add('hidden'); return; }
+  $('#clearHist').classList.remove('hidden');
+  list.innerHTML = h.map(s=>{
+    const d=new Date(s.date);
+    const dateStr=d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' · '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+    const col = s.grade.cls==='good'?'var(--safe)':s.grade.cls==='ok'?'var(--warn)':'var(--alert)';
+    const spark=sparkline(s.series.map(p=>p.cm),{w:92,h:42,color:col,threshold:s.cfg.threshold});
+    return `<div class="hist-item" data-id="${s.id}">
+      <div class="hist-meta">
+        <div class="hist-title">${fmtDur(s.durationSec)} · <span style="color:${col}">${s.grade.label}</span></div>
+        <div class="hist-sub">${dateStr} · avg ${s.stats.avgDist!=null?Math.round(s.stats.avgDist)+'cm':'—'} · ${s.stats.totalBreaches} breach${s.stats.totalBreaches===1?'':'es'}</div>
+      </div>
+      <div class="hist-spark">${spark}</div>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('.hist-item').forEach(it=> it.onclick=()=>{
+    const s=loadHistory().find(x=>x.id===it.dataset.id);
+    if(s){ $('#historyScrim').classList.remove('open'); openReport(s,true); }
+  });
+}
+
+/* ---------- Export ---------- */
+function reportText(s){
+  const d=new Date(s.date);
+  return [
+    'Sightline — session report', d.toLocaleString(),
+    '', 'Duration: '+fmtDur(s.durationSec),
+    'Grade: '+s.grade.label+' ('+s.grade.score+'/100)',
+    'Avg distance: '+(s.stats.avgDist!=null?Math.round(s.stats.avgDist)+' cm':'—')+' (range '+(s.stats.minDist!=null?Math.round(s.stats.minDist):'–')+'–'+(s.stats.maxDist!=null?Math.round(s.stats.maxDist):'–')+' cm)',
+    'Time at safe distance: '+(s.stats.pctGood!=null?s.stats.pctGood+'%':'—'),
+    'Avg blink rate: '+(s.stats.avgBlink!=null?Math.round(s.stats.avgBlink)+'/min':'—'),
+    'Time at healthy blink rate: '+(s.stats.pctBlinkOk!=null?s.stats.pctBlinkOk+'%':'—'),
+    'Breaches: '+s.stats.totalBreaches+' ('+s.stats.distanceBreaches+' distance, '+s.stats.blinkBreaches+' blink)',
+    'Limits used: '+s.cfg.threshold+' cm, '+s.cfg.safeBlink+'/min'
+  ].join('\n');
+}
+async function exportReport(s){
+  const text=reportText(s);
+  try{ if(navigator.share){ await navigator.share({ title:'Sightline session report', text }); return; } }
+  catch(e){ if(e && e.name==='AbortError') return; }
+  try{
+    const blob=new Blob([text],{type:'text/plain'}), url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.download='sightline-'+s.id+'.txt';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+    showBanner('Report exported', 'info');
+  }catch(e){ showBanner('Export not supported here', 'info'); }
+}
+
+/* ---------- Calibration ---------- */
+async function openCalibration(){
+  $('#calDistV').textContent=cfg.calDistCm; $('#calDistR').value=cfg.calDistCm;
+  $('#calScrim').classList.add('open');
+  try{ await ensureModel(); await startCamera(calVideo); }catch(e){ $('#calRead').textContent='Camera unavailable — allow access to calibrate.'; return; }
+  currentMode='cal'; running=true; lastVideoTime=-1; loop();
+}
+function closeCalibration(){ running=false; currentMode=null; cancelAnimationFrame(rafId); stopCamera(); $('#calScrim').classList.remove('open'); }
+$('#captureBtn').onclick=()=>{
+  if(!calCurrentPx) return;
+  cfg.calRefPx=calCurrentPx; cfg.calDistCm=+$('#calDistR').value; save();
+  updateCalState(); closeCalibration(); showBanner(`Calibrated at ${cfg.calDistCm} cm`, 'info');
+};
+$('#calCancel').onclick=closeCalibration;
+$('#calDistR').oninput=e=>$('#calDistV').textContent=e.target.value;
+function updateCalState(){ calState.textContent = cfg.calRefPx ? `Calibrated at ${cfg.calDistCm} cm. Re-calibrate anytime if readings drift.` : 'Not calibrated — calibrate once for accurate distance in cm.'; }
+
+/* ---------- Settings ---------- */
+const notifSwitch=$('#notifSwitch'), bgSwitch=$('#bgSwitch');
+function syncSettingsUI(){
+  $('#thR').value=cfg.threshold; $('#thV').textContent=cfg.threshold;
+  $('#apR').value=cfg.approachHold; $('#apV').textContent=cfg.approachHold;
+  $('#blR').value=cfg.safeBlink; $('#blV').textContent=cfg.safeBlink;
+  $('#bhR').value=cfg.blinkHold; $('#bhV').textContent=cfg.blinkHold;
+  $('#ssR').value=cfg.sessionMin; $('#ssV').textContent=cfg.sessionMin;
+  notifSwitch.classList.toggle('on', cfg.notif);
+  bgSwitch.classList.toggle('on', cfg.background);
+}
+[['thR','thV'],['apR','apV'],['blR','blV'],['bhR','bhV'],['ssR','ssV']].forEach(([r,v])=>{ $('#'+r).oninput=e=>$('#'+v).textContent=e.target.value; });
+notifSwitch.onclick=()=>notifSwitch.classList.toggle('on');
+bgSwitch.onclick=()=>bgSwitch.classList.toggle('on');
+$('#saveSettings').onclick=async()=>{
+  cfg.threshold=+$('#thR').value; cfg.approachHold=+$('#apR').value; cfg.safeBlink=+$('#blR').value;
+  cfg.blinkHold=+$('#bhR').value; cfg.sessionMin=+$('#ssR').value;
+  cfg.notif=notifSwitch.classList.contains('on'); cfg.background=bgSwitch.classList.contains('on');
+  save();
+  if(cfg.notif){ await requestNotifPermission(); await setupNativeChannel(); }
+  $('#settingsScrim').classList.remove('open'); showBanner('Configuration saved', 'info');
+};
+
+/* ---------- Wiring ---------- */
+startBtn.onclick=startSession;
+stopBtn.onclick=()=>endSession(true);
+$('#calBtn').onclick=openCalibration;
+$('#openSettings').onclick=$('#settingsBtn2').onclick=()=>{ syncSettingsUI(); $('#settingsScrim').classList.add('open'); };
+$('#openHistory').onclick=openHistory;
+$('#historyClose').onclick=()=>$('#historyScrim').classList.remove('open');
+$('#clearHist').onclick=()=>{ if(confirm('Delete all saved sessions?')){ saveHistory([]); renderHistory(); } };
+$('#reportPrimary').onclick=()=>$('#reportScrim').classList.remove('open');
+$('#reportExport').onclick=()=>{ if(currentReport) exportReport(currentReport); };
+$('#reportBack').onclick=()=>{ $('#reportScrim').classList.remove('open'); openHistory(); };
+$('#reportDelete').onclick=()=>{ if(currentReport && confirm('Delete this session?')){ saveHistory(loadHistory().filter(x=>x.id!==currentReport.id)); $('#reportScrim').classList.remove('open'); openHistory(); } };
+document.querySelectorAll('.scrim').forEach(sc=>sc.addEventListener('click',e=>{ if(e.target===sc && sc.id!=='calScrim') sc.classList.remove('open'); }));
+
+updateCalState();
+if(!('mediaDevices' in navigator)){ camStatus.textContent='This browser has no camera API. Open in Chrome or Safari over https.'; }
+</script>
+</body>
+</html>
