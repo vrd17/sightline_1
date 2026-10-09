@@ -27,6 +27,24 @@ public class MainActivity extends BridgeActivity {
         requestStartupPermissions();
     }
 
+    /* The WebView's visibilitychange handler normally hands the camera to the
+       native monitor, but its JS can be throttled once hidden — so also do the
+       hand-off natively. Both paths are idempotent. The service only runs during
+       a session with background monitoring enabled. */
+    @Override
+    public void onStop() {
+        super.onStop();
+        BackgroundMonitorService s = BackgroundMonitorService.INSTANCE;
+        if (BackgroundMonitorService.RUNNING && s != null) s.activate();
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        BackgroundMonitorService s = BackgroundMonitorService.INSTANCE;
+        if (BackgroundMonitorService.RUNNING && s != null) s.standby();
+    }
+
     private void requestStartupPermissions() {
         List<String> need = new ArrayList<>();
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)

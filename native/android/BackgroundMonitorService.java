@@ -7,6 +7,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
 import android.net.Uri;
@@ -68,19 +69,31 @@ public class BackgroundMonitorService extends LifecycleService {
     public static volatile BackgroundMonitorService INSTANCE = null;
 
     // config (snapshot passed from JS)
-    private double threshold = 35, safeBlink = 12, refCm = 0;
-    private long approachHoldMs = 5000, blinkHoldMs = 15000;
-    private boolean notif = true;
+    private volatile double threshold = 35, safeBlink = 12, refCm = 0, calK = 0;
+    private volatile long approachHoldMs = 5000, blinkHoldMs = 15000;
+    private volatile boolean notif = true;
+
+    // ML Kit's LEFT_EYE/RIGHT_EYE are eye centres; the web app measures outer eye
+    // corners (MediaPipe 33/263). Centre span ≈ 0.70 × corner span.
+    private static final double CENTER_TO_CORNER = 0.70;
+    // No analysed frame within this window after activation → rebind the camera
+    // (the WebView often still holds it for a moment after being backgrounded).
+    private static final long WATCHDOG_MS = 3000;
+    private static final int MAX_REBINDS = 6;
 
     // self-calibration: cm = K / px, where K is fixed from the hand-off distance
     private double K = 0;
 
     // runtime
-    private boolean active = false;
+    private volatile boolean active = false;
     private ExecutorService analysisExec;
     private ProcessCameraProvider cameraProvider;
     private FaceDetector detector;
-    private long lastAnalyze = 0, startedWall = 0, lastSample = 0;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private volatile long lastFrameAt = 0;
+    private int rebinds = 0;
+    private long lastAnalyze = 0, startedWall = 0, lastSample = 0, activatedAt = 0;
+    private String lastPersistText = null; private long lastPersistAt = 0;
 
     // breach episode state
     private Long tooCloseSince = null; private boolean distNotified = false;
@@ -100,16 +113,22 @@ public class BackgroundMonitorService extends LifecycleService {
         if ("STOP".equals(action)) { stopSelf(); return START_NOT_STICKY; }
 
         if (intent != null && intent.hasExtra("threshold")) {
-            threshold     = intent.getDoubleExtra("threshold", 35);
-            safeBlink     = intent.getDoubleExtra("safeBlink", 12);
-            approachHoldMs = (long) (intent.getDoubleExtra("approachHold", 5) * 1000);
-            blinkHoldMs    = (long) (intent.getDoubleExtra("blinkHold", 15) * 1000);
-            refCm         = intent.getDoubleExtra("refCm", 0);
-            notif         = intent.getBooleanExtra("notif", true);
+            configure(intent.getDoubleExtra("threshold", 35), intent.getDoubleExtra("approachHold", 5),
+                    intent.getDoubleExtra("safeBlink", 12), intent.getDoubleExtra("blinkHold", 15),
+                    intent.getDoubleExtra("refCm", 0), intent.getDoubleExtra("calK", 0),
+                    intent.getBooleanExtra("notif", true));
         }
 
         createChannels();
-        startForeground(NOTIF_ID, buildPersist("Monitoring ready"));
+        Notification persist = buildPersist(active ? "Watching eye distance" : "Monitoring ready");
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                startForeground(NOTIF_ID, persist, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
+            else startForeground(NOTIF_ID, persist);
+        } catch (Exception e) {
+            // e.g. camera permission revoked — can't run as a camera service
+            stopSelf(); return START_NOT_STICKY;
+        }
         RUNNING = true;
         if (startedWall == 0) startedWall = System.currentTimeMillis();
 
@@ -118,10 +137,31 @@ public class BackgroundMonitorService extends LifecycleService {
         return START_STICKY;
     }
 
+    /** Update thresholds/calibration in place (no startForegroundService, which
+     *  Android 12+ refuses once the app is already in the background). */
+    public void configure(double threshold, double approachHoldSec, double safeBlink, double blinkHoldSec,
+                          double refCm, double calK, boolean notif) {
+        this.threshold = threshold;
+        this.safeBlink = safeBlink;
+        this.approachHoldMs = (long) (approachHoldSec * 1000);
+        this.blinkHoldMs = (long) (blinkHoldSec * 1000);
+        if (refCm > 0) this.refCm = refCm;
+        if (calK > 0) this.calK = calK;
+        this.notif = notif;
+    }
+
     /* ---------- camera control ---------- */
     public void activate() {
+        main.post(this::activateOnMain);
+    }
+
+    private void activateOnMain() {
         if (active) return;
-        active = true; K = 0;
+        active = true; K = 0; rebinds = 0;
+        activatedAt = System.currentTimeMillis();
+        tooCloseSince = null; distNotified = false;
+        blinkLowSince = null; blinkNotified = false; blinkClosed = false; blinkTimes.clear();
+        lastPersistText = null;
         if (detector == null) {
             FaceDetectorOptions opts = new FaceDetectorOptions.Builder()
                     .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
@@ -131,8 +171,15 @@ public class BackgroundMonitorService extends LifecycleService {
             detector = FaceDetection.getClient(opts);
         }
         if (analysisExec == null) analysisExec = Executors.newSingleThreadExecutor();
+        bindCamera();
+    }
+
+    private void bindCamera() {
+        lastFrameAt = 0;
+        final long bindAt = System.currentTimeMillis();
         final ListenableFuture<ProcessCameraProvider> fut = ProcessCameraProvider.getInstance(this);
         fut.addListener(() -> {
+            if (!active) return;
             try {
                 cameraProvider = fut.get();
                 ImageAnalysis analysis = new ImageAnalysis.Builder()
@@ -144,18 +191,25 @@ public class BackgroundMonitorService extends LifecycleService {
                         .requireLensFacing(CameraSelector.LENS_FACING_FRONT).build();
                 cameraProvider.unbindAll();
                 cameraProvider.bindToLifecycle(this, sel, analysis);
-                updatePersist("Watching eye distance");
+                updatePersist("Starting camera…", true);
             } catch (Exception e) {
-                updatePersist("Camera unavailable");
+                updatePersist("Camera unavailable — retrying", true);
             }
+            // Watchdog: if no frame arrives (camera still held by the WebView, or
+            // the bind failed), rebind a few times before giving up.
+            main.postDelayed(() -> {
+                if (!active || lastFrameAt >= bindAt) return;
+                if (rebinds++ < MAX_REBINDS) bindCamera();
+                else updatePersist("Camera unavailable in background", true);
+            }, WATCHDOG_MS);
         }, ContextCompat.getMainExecutor(this));
     }
 
     public void standby() {
         active = false;
-        new Handler(Looper.getMainLooper()).post(() -> {
+        main.post(() -> {
             try { if (cameraProvider != null) cameraProvider.unbindAll(); } catch (Exception ignored) {}
-            updatePersist("Paused (app in front)");
+            updatePersist("Paused (app in front)", true);
         });
     }
 
@@ -163,16 +217,20 @@ public class BackgroundMonitorService extends LifecycleService {
     @SuppressLint("UnsafeOptInUsageError")
     private void analyze(@NonNull ImageProxy proxy) {
         long now = System.currentTimeMillis();
-        if (!active || now - lastAnalyze < 600 || proxy.getImage() == null) { proxy.close(); return; }
+        lastFrameAt = now;
+        // ~7 fps: a blink lasts 100–300 ms, so slower sampling misses most of them
+        if (!active || now - lastAnalyze < 140 || proxy.getImage() == null) { proxy.close(); return; }
         lastAnalyze = now;
+        final double maxDim = Math.max(proxy.getWidth(), proxy.getHeight());
         InputImage img = InputImage.fromMediaImage(proxy.getImage(), proxy.getImageInfo().getRotationDegrees());
         Task<List<Face>> t = detector.process(img);
-        t.addOnSuccessListener(faces -> handleFaces(faces, now));
+        t.addOnSuccessListener(faces -> handleFaces(faces, now, maxDim));
         t.addOnCompleteListener(x -> proxy.close());
     }
 
-    private void handleFaces(List<Face> faces, long now) {
-        if (faces == null || faces.isEmpty()) { updatePersist("No face in view"); return; }
+    private void handleFaces(List<Face> faces, long now, double maxDim) {
+        if (!active) return;
+        if (faces == null || faces.isEmpty()) { updatePersist("No face in view", false); return; }
         Face face = faces.get(0);
 
         Double cm = null;
@@ -183,7 +241,10 @@ public class BackgroundMonitorService extends LifecycleService {
             double dy = le.getPosition().y - re.getPosition().y;
             double px = Math.hypot(dx, dy);
             if (px > 1) {
-                if (K <= 0 && refCm > 0) K = refCm * px;   // self-calibrate from hand-off distance
+                if (K <= 0) {
+                    if (refCm > 0) K = refCm * px;                              // hand-off distance
+                    else if (calK > 0) K = calK * CENTER_TO_CORNER * maxDim;    // saved calibration
+                }
                 if (K > 0) cm = K / px;
             }
         }
@@ -195,9 +256,10 @@ public class BackgroundMonitorService extends LifecycleService {
             else if (blinkClosed && avg > 0.6) { blinkClosed = false; }
         }
         while (!blinkTimes.isEmpty() && now - blinkTimes.peekFirst() > 60000) blinkTimes.pollFirst();
-        long elapsed = now - startedWall;
+        // measure from activation: blinks seen before the hand-off belong to the WebView
+        long elapsed = now - activatedAt;
         Double rate = null;
-        if (elapsed >= 12000) rate = elapsed >= 60000 ? (double) blinkTimes.size()
+        if (elapsed >= 20000) rate = elapsed >= 60000 ? (double) blinkTimes.size()
                 : Math.round(blinkTimes.size() / (elapsed / 60000.0));
 
         if (cm != null) {
@@ -205,7 +267,6 @@ public class BackgroundMonitorService extends LifecycleService {
                 if (tooCloseSince == null) tooCloseSince = now;
                 if (now - tooCloseSince >= approachHoldMs && !distNotified) { distNotified = true; fireBreach("distance", now); }
             } else if (cm > threshold + 4) { tooCloseSince = null; distNotified = false; }
-            updatePersist(Math.round(cm) + " cm from screen");
         }
         if (rate != null) {
             if (rate < safeBlink) {
@@ -214,6 +275,10 @@ public class BackgroundMonitorService extends LifecycleService {
             } else if (rate >= safeBlink + 2) { blinkLowSince = null; blinkNotified = false; }
         }
 
+        String dist = cm != null ? Math.round(cm) + " cm" : "distance not calibrated";
+        String blink = rate != null ? Math.round(rate) + " blinks/min" : "measuring blinks…";
+        updatePersist(dist + " · " + blink, false);
+
         if (now - lastSample >= 1000) {
             lastSample = now;
             try {
@@ -221,26 +286,30 @@ public class BackgroundMonitorService extends LifecycleService {
                 s.put("ts", now);
                 s.put("cm", cm == null ? JSONObject.NULL : Math.round(cm * 10) / 10.0);
                 s.put("rate", rate == null ? JSONObject.NULL : rate);
-                if (samples.length() < 1200) samples.put(s);
+                synchronized (this) { if (samples.length() < 1200) samples.put(s); }
             } catch (Exception ignored) {}
         }
     }
 
     /* ---------- alerts ---------- */
     private void fireBreach(String type, long now) {
-        try { JSONObject b = new JSONObject(); b.put("ts", now); b.put("type", type); if (breaches.length() < 200) breaches.put(b); } catch (Exception ignored) {}
+        try { JSONObject b = new JSONObject(); b.put("ts", now); b.put("type", type); synchronized (this) { if (breaches.length() < 200) breaches.put(b); } } catch (Exception ignored) {}
         if (notif) {
             boolean dist = "distance".equals(type);
             String title = dist ? "Move away from the screen" : "Blink and look away";
             String text  = dist ? ("Closer than " + (int) threshold + " cm — give the eyes some distance.")
                                  : ("Blink rate dropped below " + (int) safeBlink + "/min — blink and rest.");
-            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            Notification n = new NotificationCompat.Builder(this, CH_ALERT)
-                    .setContentTitle(title).setContentText(text)
-                    .setSmallIcon(icon()).setPriority(NotificationCompat.PRIORITY_HIGH)
-                    .setCategory(NotificationCompat.CATEGORY_ALARM).setAutoCancel(true)
-                    .setContentIntent(openAppIntent()).build();
-            if (nm != null) nm.notify((int) (now % 100000), n);
+            try {
+                NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                Notification n = new NotificationCompat.Builder(this, CH_ALERT)
+                        .setContentTitle(title).setContentText(text)
+                        .setSmallIcon(icon()).setPriority(NotificationCompat.PRIORITY_HIGH)
+                        .setCategory(NotificationCompat.CATEGORY_ALARM).setAutoCancel(true)
+                        .setDefaults(NotificationCompat.DEFAULT_ALL)
+                        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                        .setContentIntent(openAppIntent()).build();
+                if (nm != null) nm.notify(dist ? NOTIF_ID + 1 : NOTIF_ID + 2, n);
+            } catch (Exception ignored) {}
         }
         alarmSound();
         vibrate(type);
@@ -269,13 +338,17 @@ public class BackgroundMonitorService extends LifecycleService {
     }
 
     /* ---------- summary for JS ---------- */
-    public String getSummaryJson() {
+    /** Returns and clears what was gathered since the last call, so repeated
+     *  background trips aren't merged into the session report twice. */
+    public synchronized String getSummaryJson() {
         try {
             JSONObject o = new JSONObject();
             o.put("breaches", breaches);
             o.put("samples", samples);
             o.put("started", startedWall);
             o.put("ended", System.currentTimeMillis());
+            breaches = new JSONArray();
+            samples = new JSONArray();
             return o.toString();
         } catch (Exception e) { return "{}"; }
     }
@@ -296,12 +369,21 @@ public class BackgroundMonitorService extends LifecycleService {
                 .setSmallIcon(icon())
                 .setContentIntent(openAppIntent())
                 .setOngoing(true)
+                .setOnlyAlertOnce(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
     }
-    private void updatePersist(String text) {
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm != null) nm.notify(NOTIF_ID, buildPersist(text));
+    /** Live status in the ongoing notification. Throttled (Android drops ALL of an
+     *  app's notifications, alerts included, when it posts too fast). */
+    private void updatePersist(String text, boolean force) {
+        long now = System.currentTimeMillis();
+        if (text.equals(lastPersistText)) return;
+        if (!force && now - lastPersistAt < 1500) return;
+        lastPersistText = text; lastPersistAt = now;
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) nm.notify(NOTIF_ID, buildPersist(text));
+        } catch (Exception ignored) {}
     }
 
     private void createChannels() {
@@ -321,6 +403,7 @@ public class BackgroundMonitorService extends LifecycleService {
     }
 
     @Override public void onDestroy() {
+        main.removeCallbacksAndMessages(null);
         try { if (cameraProvider != null) cameraProvider.unbindAll(); } catch (Exception ignored) {}
         try { if (detector != null) detector.close(); } catch (Exception ignored) {}
         if (analysisExec != null) analysisExec.shutdown();

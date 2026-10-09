@@ -38,6 +38,7 @@ public class BackgroundMonitorPlugin extends Plugin {
             i.putExtra("safeBlink", call.getDouble("safeBlink", 12.0));
             i.putExtra("blinkHold", call.getDouble("blinkHold", 15.0));
             i.putExtra("refCm", call.getDouble("refCm", 0.0));
+            i.putExtra("calK", call.getDouble("calK", 0.0));
             i.putExtra("notif", call.getBoolean("notif", true));
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) getContext().startForegroundService(i);
             else getContext().startService(i);
@@ -45,19 +46,31 @@ public class BackgroundMonitorPlugin extends Plugin {
         } catch (Exception e) { call.reject("bg-start-failed: " + e.getMessage()); }
     }
 
+    /** activate({...same config as start}) — called as the app is backgrounded.
+     *  Updates the running service in place; restarting it from the background
+     *  would be refused on Android 12+. */
     @PluginMethod
     public void activate(PluginCall call) {
         BackgroundMonitorService s = BackgroundMonitorService.INSTANCE;
-        if (s != null) s.activate();
-        else { Intent i = svc(); i.setAction("ACTIVATE"); startSvc(i); }
-        call.resolve();
+        if (s != null) {
+            if (call.hasOption("threshold")) {
+                s.configure(call.getDouble("threshold", 35.0), call.getDouble("approachHold", 5.0),
+                        call.getDouble("safeBlink", 12.0), call.getDouble("blinkHold", 15.0),
+                        call.getDouble("refCm", 0.0), call.getDouble("calK", 0.0),
+                        call.getBoolean("notif", true));
+            }
+            s.activate();
+            call.resolve();
+        } else {
+            try { Intent i = svc(); i.setAction("ACTIVATE"); startSvc(i); call.resolve(); }
+            catch (Exception e) { call.reject("bg-activate-failed: " + e.getMessage()); }
+        }
     }
 
     @PluginMethod
     public void standby(PluginCall call) {
         BackgroundMonitorService s = BackgroundMonitorService.INSTANCE;
         if (s != null) s.standby();
-        else { Intent i = svc(); i.setAction("STANDBY"); startSvc(i); }
         call.resolve();
     }
 

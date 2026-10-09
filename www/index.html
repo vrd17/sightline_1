@@ -426,7 +426,15 @@ function notify(title, body, tag){
    Started in standby while the app is visible, so it can legally open the
    camera later when the app is backgrounded. */
 let bgActive=false;
-function bgConfig(){ return { threshold:cfg.threshold, approachHold:cfg.approachHold, safeBlink:cfg.safeBlink, blinkHold:cfg.blinkHold, refCm:(curCm!=null&&isFinite(curCm))?curCm:0, notif:cfg.notif }; }
+let lastGoodCm=null, lastGoodCmAt=0, lastVidMax=0;
+function bgConfig(){
+  // hand-off distance: last reading if recent (curCm goes null the moment the face is lost)
+  const refCm = (lastGoodCm!=null && Date.now()-lastGoodCmAt < 15000) ? lastGoodCm : 0;
+  // resolution-independent calibration (corner-span fraction × cm) — native fallback when there is no hand-off reading
+  const vmax = lastVidMax || Math.max(video.videoWidth||0, video.videoHeight||0);
+  const calK = (cfg.calRefPx && cfg.calDistCm && vmax) ? cfg.calDistCm * cfg.calRefPx / vmax : 0;
+  return { threshold:cfg.threshold, approachHold:cfg.approachHold, safeBlink:cfg.safeBlink, blinkHold:cfg.blinkHold, refCm, calK, notif:cfg.notif };
+}
 async function bgServiceStart(){ try{ if(hasBg && cfg.background){ await BackgroundMonitor.start(bgConfig()); } }catch(e){} }
 async function bgServiceStop(){ try{ if(hasBg){ await BackgroundMonitor.stop(); } bgActive=false; }catch(e){} }
 
@@ -546,6 +554,8 @@ function loop(){
 
   // session
   const cm = pxToCm(px); curCm = cm;
+  if(cm!=null && isFinite(cm)){ lastGoodCm=cm; lastGoodCmAt=Date.now(); }
+  lastVidMax = Math.max(src.videoWidth, src.videoHeight);
   updateGauge(cm);
   const bScore = blinkScore(res.faceBlendshapes && res.faceBlendshapes[0]);
   if(!blinkClosed && bScore>0.5){ blinkClosed=true; blinkTimes.push(now); }
@@ -624,8 +634,11 @@ document.addEventListener('visibilitychange', async ()=>{
   if(document.hidden){
     camDot.className='dot paused';
     if(hasBg && cfg.background){
+      const conf = bgConfig();
       try{ stopCamera(); }catch(e){}
-      try{ await BackgroundMonitor.start(bgConfig()); await BackgroundMonitor.activate(); bgActive=true; }catch(e){}
+      // update the already-running service in place — re-starting it from the
+      // background is refused on Android 12+, which silently skipped activation
+      try{ await BackgroundMonitor.activate(conf); bgActive=true; }catch(e){}
       camStatus.textContent='Monitoring in background — native camera';
     } else {
       camStatus.textContent='Paused — open Sightline again to keep guarding.';
@@ -633,7 +646,7 @@ document.addEventListener('visibilitychange', async ()=>{
     }
   }else{
     bgNotified=false;
-    if(bgActive){
+    if(hasBg && cfg.background){   // native may have activated on its own (MainActivity.onStop)
       try{ await BackgroundMonitor.standby(); const r=await BackgroundMonitor.getSummary(); mergeBgSummary(r && r.summary); }catch(e){}
       bgActive=false;
     }
@@ -671,7 +684,7 @@ async function startSession(){
     camStatus.textContent='Camera blocked or unavailable. Allow camera access, then tap Start.'; startBtn.disabled=false; await bgServiceStop(); return;
   }
   running=true; currentMode='session'; sessionStart=performance.now(); sessionStartWall=Date.now(); lastVideoTime=-1;
-  alerts=0; blinkTimes=[]; series=[]; breachLog=[]; curCm=null; curRate=null; bgNotified=false;
+  alerts=0; blinkTimes=[]; series=[]; breachLog=[]; curCm=null; curRate=null; bgNotified=false; lastGoodCm=null;
   tooCloseSince=null; distEpisodeNotified=false; blinkLowSince=null; blinkEpisodeNotified=false;
   alertVal.textContent=0;
   startBtn.classList.add('hidden'); stopBtn.classList.remove('hidden'); startBtn.disabled=false;
@@ -688,7 +701,7 @@ function tickSession(){
 async function endSession(showReport){
   running=false; currentMode=null; cancelAnimationFrame(rafId); clearInterval(sessionTimer); stopCamera();
   try{ if(wakeSentinel){ await wakeSentinel.release(); wakeSentinel=null; } }catch(e){}
-  if(bgActive){ try{ await BackgroundMonitor.standby(); const r=await BackgroundMonitor.getSummary(); mergeBgSummary(r && r.summary); }catch(e){} }
+  if(hasBg && cfg.background){ try{ await BackgroundMonitor.standby(); const r=await BackgroundMonitor.getSummary(); mergeBgSummary(r && r.summary); }catch(e){} }
   await bgServiceStop();
   camDot.className='dot';
   startBtn.classList.remove('hidden'); stopBtn.classList.add('hidden');
