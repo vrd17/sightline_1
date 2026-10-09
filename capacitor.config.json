@@ -1,0 +1,14 @@
+{
+  "appId": "com.sightline.app",
+  "appName": "Sightline",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_eye",
+      "iconColor": "#49E0C5"
+    }
+  }
+}
