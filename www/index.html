@@ -300,7 +300,7 @@
     </div>
 
     <div class="toggle">
-      <div><div class="t-txt">Keep running in background</div><div class="t-desc">Keeps the session alive behind other apps. Pair with split-screen so the camera stays visible.</div></div>
+      <div><div class="t-txt">Keep monitoring in background</div><div class="t-desc">Keeps watching distance &amp; blinking while your child uses another app (e.g. videos). Uses the camera in the background — a green dot stays on.</div></div>
       <div class="switch on" id="bgSwitch"></div>
     </div>
 
@@ -364,9 +364,24 @@
 </div>
 
 <script type="module">
-import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
-const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm";
-const MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+/* Face-tracking engine is loaded lazily and offline-first. On a packaged build
+   (Tab S10 Lite etc.) the engine + model are bundled under ./vendor and used
+   with no network; a plain browser falls back to the CDN. Crucially this is a
+   DYNAMIC import inside a try/catch, so a failed/offline load never kills the
+   whole app — the UI still works and shows a clear message. */
+const CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+const CDN_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+let FaceLandmarker=null, FilesetResolver=null, ASSETS=null;
+async function fileExists(u){ try{ const r=await fetch(u,{cache:'force-cache'}); return r.ok; }catch(e){ return false; } }
+async function resolveAssets(){
+  if(ASSETS) return ASSETS;
+  const localEsm='./vendor/tasks-vision/vision_bundle.mjs';
+  const local = await fileExists(localEsm);   // small probe; the whole bundle ships together
+  ASSETS = local
+    ? { esm:localEsm, wasm:'./vendor/tasks-vision/wasm', model:'./vendor/face_landmarker.task' }
+    : { esm:CDN, wasm:CDN+'/wasm', model:CDN_MODEL };
+  return ASSETS;
+}
 
 /* ---------- Config ---------- */
 const DEFAULTS = { threshold:35, approachHold:5, safeBlink:12, blinkHold:15, sessionMin:30, notif:true, background:true, calRefPx:null, calDistCm:45 };
@@ -382,7 +397,8 @@ const Cap = window.Capacitor;
 const isNative = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
 const Plugins = (Cap && Cap.Plugins) || {};
 const LocalNotifications = Plugins.LocalNotifications;
-const Foreground = Plugins.Foreground; // custom foreground-service plugin (Android)
+const BackgroundMonitor = Plugins.BackgroundMonitor; // native camera monitor (Android)
+const hasBg = isNative && !!BackgroundMonitor;
 
 async function requestNotifPermission(){
   try{
@@ -406,8 +422,13 @@ function notify(title, body, tag){
     if('Notification' in window && Notification.permission==='granted'){ new Notification(title,{body,tag}); }
   }catch(e){}
 }
-async function fgStart(){ try{ if(isNative && Foreground && cfg.background){ await Foreground.start({ title:'Sightline is guarding your eyes', text:'Monitoring screen distance & blink rate' }); } }catch(e){} }
-async function fgStop(){ try{ if(isNative && Foreground){ await Foreground.stop(); } }catch(e){} }
+/* Native background monitor (camera-type foreground service).
+   Started in standby while the app is visible, so it can legally open the
+   camera later when the app is backgrounded. */
+let bgActive=false;
+function bgConfig(){ return { threshold:cfg.threshold, approachHold:cfg.approachHold, safeBlink:cfg.safeBlink, blinkHold:cfg.blinkHold, refCm:(curCm!=null&&isFinite(curCm))?curCm:0, notif:cfg.notif }; }
+async function bgServiceStart(){ try{ if(hasBg && cfg.background){ await BackgroundMonitor.start(bgConfig()); } }catch(e){} }
+async function bgServiceStop(){ try{ if(hasBg){ await BackgroundMonitor.stop(); } bgActive=false; }catch(e){} }
 
 /* ---------- Loud alarm (WebAudio) ---------- */
 let audioCtx=null;
@@ -441,7 +462,7 @@ const GAUGE_MIN=20, GAUGE_MAX=70;
 
 /* ---------- State ---------- */
 let landmarker=null, stream=null, running=false, rafId=null, wakeSentinel=null;
-let sessionStart=0, sessionTimer=null, lastVideoTime=-1, currentMode=null;
+let sessionStart=0, sessionStartWall=0, sessionTimer=null, lastVideoTime=-1, currentMode=null;
 let alerts=0;
 let blinkTimes=[], blinkClosed=false;
 let tooCloseSince=null, distEpisodeNotified=false;
@@ -454,10 +475,20 @@ let currentReport=null;
 async function ensureModel(){
   if(landmarker) return landmarker;
   camStatus.textContent='Loading eye-tracking model…';
+  const A = await resolveAssets();
+  if(!FaceLandmarker){
+    try{ const mod = await import(A.esm); FaceLandmarker=mod.FaceLandmarker; FilesetResolver=mod.FilesetResolver; }
+    catch(e){
+      // bundled load failed (or offline with no bundle) — try CDN once
+      try{ const mod = await import(CDN); FaceLandmarker=mod.FaceLandmarker; FilesetResolver=mod.FilesetResolver; ASSETS={esm:CDN,wasm:CDN+'/wasm',model:CDN_MODEL}; }
+      catch(e2){ camStatus.textContent='Eye-tracking engine could not load. Connect to the internet once, then reopen.'; throw e2; }
+    }
+  }
+  const use = ASSETS;
   let vision;
-  try{ vision = await FilesetResolver.forVisionTasks(WASM); }
+  try{ vision = await FilesetResolver.forVisionTasks(use.wasm); }
   catch(e){ camStatus.textContent='Could not load the model. Check your internet connection and try again.'; throw e; }
-  const opts = (delegate)=>({ baseOptions:{ modelAssetPath:MODEL, delegate }, outputFaceBlendshapes:true, runningMode:"VIDEO", numFaces:1 });
+  const opts = (delegate)=>({ baseOptions:{ modelAssetPath:use.model, delegate }, outputFaceBlendshapes:true, runningMode:"VIDEO", numFaces:1 });
   try{
     landmarker = await FaceLandmarker.createFromOptions(vision, opts("GPU"));
   }catch(e){
@@ -584,19 +615,42 @@ function showBanner(txt, variant){
   bannerTimer=setTimeout(()=>banner.classList.remove('show'), 4200);
 }
 
-/* ---------- Background / visibility ---------- */
-document.addEventListener('visibilitychange', ()=>{
+/* ---------- Background / visibility ----------
+   When the app is backgrounded during a session, hand the camera to the native
+   monitor (Android) so distance/blink alerts keep firing while another app is
+   fullscreen. On return, take the camera back and fold in what happened. */
+document.addEventListener('visibilitychange', async ()=>{
   if(!running || currentMode!=='session') return;
   if(document.hidden){
     camDot.className='dot paused';
-    camStatus.textContent='Paused in background — keep Sightline on-screen (split-screen) to keep guarding.';
-    if(cfg.notif && !bgNotified){ bgNotified=true; notify('Sightline paused', 'Keep Sightline visible (try split-screen) so it can watch distance and blinking while your child uses other apps.', 'sightline-bg'); }
+    if(hasBg && cfg.background){
+      try{ stopCamera(); }catch(e){}
+      try{ await BackgroundMonitor.start(bgConfig()); await BackgroundMonitor.activate(); bgActive=true; }catch(e){}
+      camStatus.textContent='Monitoring in background — native camera';
+    } else {
+      camStatus.textContent='Paused — open Sightline again to keep guarding.';
+      if(cfg.notif && !bgNotified){ bgNotified=true; notify('Sightline paused', 'Open Sightline again to keep watching distance and blinking.', 'sightline-bg'); }
+    }
   }else{
     bgNotified=false;
+    if(bgActive){
+      try{ await BackgroundMonitor.standby(); const r=await BackgroundMonitor.getSummary(); mergeBgSummary(r && r.summary); }catch(e){}
+      bgActive=false;
+    }
+    camDot.className='dot on';
     camStatus.textContent='Monitoring · on-device · nothing recorded';
-    resumeCameraIfNeeded();
+    await resumeCameraIfNeeded();
   }
 });
+function mergeBgSummary(jsonStr){
+  if(!jsonStr) return;
+  let d; try{ d=JSON.parse(jsonStr); }catch(e){ return; }
+  const base = sessionStartWall || d.started || Date.now();
+  if(Array.isArray(d.breaches)) d.breaches.forEach(b=>{ breachLog.push({ t:Math.max(0,Math.round((b.ts-base)/1000)), type:b.type }); alerts++; });
+  alertVal.textContent=alerts;
+  if(Array.isArray(d.samples)) d.samples.forEach(s=>{ series.push({ t:Math.max(0,Math.round((s.ts-base)/1000)), cm:(s.cm==null?null:s.cm), rate:(s.rate==null?null:s.rate) }); });
+  series.sort((a,b)=>a.t-b.t);
+}
 async function resumeCameraIfNeeded(){
   if(running && currentMode==='session' && !camTrackLive()){
     try{ stopCamera(); await startCamera(video); lastVideoTime=-1; }catch(e){}
@@ -611,12 +665,12 @@ async function startSession(){
     if(cfg.notif){ await requestNotifPermission(); await setupNativeChannel(); }
     await ensureModel();
     await startCamera(video);
-    await fgStart();
+    await bgServiceStart();
     if('wakeLock' in navigator){ try{ wakeSentinel = await navigator.wakeLock.request('screen'); }catch(e){} }
   }catch(e){
-    camStatus.textContent='Camera blocked or unavailable. Allow camera access, then tap Start.'; startBtn.disabled=false; await fgStop(); return;
+    camStatus.textContent='Camera blocked or unavailable. Allow camera access, then tap Start.'; startBtn.disabled=false; await bgServiceStop(); return;
   }
-  running=true; currentMode='session'; sessionStart=performance.now(); lastVideoTime=-1;
+  running=true; currentMode='session'; sessionStart=performance.now(); sessionStartWall=Date.now(); lastVideoTime=-1;
   alerts=0; blinkTimes=[]; series=[]; breachLog=[]; curCm=null; curRate=null; bgNotified=false;
   tooCloseSince=null; distEpisodeNotified=false; blinkLowSince=null; blinkEpisodeNotified=false;
   alertVal.textContent=0;
@@ -634,7 +688,8 @@ function tickSession(){
 async function endSession(showReport){
   running=false; currentMode=null; cancelAnimationFrame(rafId); clearInterval(sessionTimer); stopCamera();
   try{ if(wakeSentinel){ await wakeSentinel.release(); wakeSentinel=null; } }catch(e){}
-  await fgStop();
+  if(bgActive){ try{ await BackgroundMonitor.standby(); const r=await BackgroundMonitor.getSummary(); mergeBgSummary(r && r.summary); }catch(e){} }
+  await bgServiceStop();
   camDot.className='dot';
   startBtn.classList.remove('hidden'); stopBtn.classList.add('hidden');
   camStatus.textContent='Camera off — on-device only, nothing is recorded';
@@ -849,9 +904,15 @@ bgSwitch.onclick=()=>bgSwitch.classList.toggle('on');
 $('#saveSettings').onclick=async()=>{
   cfg.threshold=+$('#thR').value; cfg.approachHold=+$('#apR').value; cfg.safeBlink=+$('#blR').value;
   cfg.blinkHold=+$('#bhR').value; cfg.sessionMin=+$('#ssR').value;
+  const bgWasOff = !cfg.background;
   cfg.notif=notifSwitch.classList.contains('on'); cfg.background=bgSwitch.classList.contains('on');
   save();
   if(cfg.notif){ await requestNotifPermission(); await setupNativeChannel(); }
+  // When background mode is first enabled on Samsung/Android, ask to exempt the
+  // app from battery optimisation so the OS doesn't kill the monitor.
+  if(hasBg && cfg.background && bgWasOff && BackgroundMonitor.requestBatteryExemption){
+    try{ await BackgroundMonitor.requestBatteryExemption(); }catch(e){}
+  }
   $('#settingsScrim').classList.remove('open'); showBanner('Configuration saved', 'info');
 };
 

@@ -1,36 +1,9 @@
 # Sightline — native (Capacitor)
 
-Native Android/iOS shell for the Sightline screen-distance guardian. The full UI
-and eye-tracking logic live in `www/index.html` (the same file also works
-standalone in a browser), wrapped by Capacitor so breach alerts can use a
-**native high-importance notification channel with sound**, and so a session can
-keep running via a **foreground service** while other apps are in front.
-
-On every breach the app fires a loud alarm tone + strong vibration + banner, and
-(natively) a sound-on notification:
-
-- **Distance breach** — face closer than the threshold for the distance-alert delay.
-- **Blink breach** — blink rate below the safe rate for the blink-alert delay.
-
-```
-sightline-native/
-├── www/index.html            <- the app (camera + MediaPipe + all logic)
-├── capacitor.config.json
-├── package.json
-├── scripts/                  <- patch-android.sh + inject_manifest.py
-└── native/
-    ├── android/
-    │   ├── ForegroundPlugin.java            <- Capacitor.Plugins.Foreground
-    │   ├── SightlineForegroundService.java  <- persistent "monitoring" service
-    │   ├── MainActivity.java                <- registers the plugin
-    │   └── ic_stat_eye.xml
-    └── ios/README-ios.md
-```
-
-## Prerequisites
-- Node.js 18+
-- Android: Android Studio + JDK 17
-- iOS: macOS + Xcode (+ CocoaPods)
+Android/iOS shell for the Sightline screen-distance & blink guardian. The UI and
+foreground monitoring live in `www/index.html` (also runs standalone in a
+browser). The native layer adds **true background monitoring** and the robustness
+fixes needed on tablets.
 
 ## Build — Android
 
@@ -38,86 +11,70 @@ sightline-native/
 cd sightline-native
 npm install
 npx cap add android
-npm run patch:android      # copies native files + patches the manifest
+npm run patch:android      # native files + manifest + gradle (CameraX, ML Kit)
 npx cap sync android
 npx cap open android        # Run in Android Studio
 ```
 
-`patch:android` is idempotent — safe to re-run after any `cap sync`. It adds the
-camera / notification / **foreground-service** / wake-lock permissions, declares
-the foreground service, and turns on **large-screen + resizeable** support
-(tablets and split-screen). The cloud GitHub-Actions build runs it automatically.
-
-## Build — iOS
-
-```bash
-npm install
-npx cap add ios
-npx cap sync ios
-npx cap open ios
-```
-
-In Xcode add to `Info.plist`:
-- `NSCameraUsageDescription` — "Sightline measures how far your face is from the screen. Video never leaves your device."
+The cloud build (GitHub Actions) does all of this automatically, plus bundles the
+face model for offline use. `patch:android` is idempotent.
 
 ## What's new in this version
 
-### 1. Background sessions + foreground service
-A session now starts an Android **foreground service** (persistent
-"Sightline is guarding your eyes" notification), so timers, state and breach
-notifications survive the app being backgrounded. Toggle it under
-**Configure → Keep running in background**.
+### Background monitoring while another app is fullscreen
+The hard part — watching distance/blink while a child watches a **fullscreen
+video** — is solved by moving detection into native Android:
 
-**Important honest limit:** on Android the camera is suspended whenever the app is
-not visible — this is an OS privacy rule, not a bug, and it applies to every
-WebView app. So distance/blink **analysis** only runs while Sightline is on
-screen. The supported way to "monitor while using another app" is **split-screen**:
-put the learning app in one pane and Sightline in the other. Sightline stays
-visible, the camera keeps working, and alerts keep firing. The large-screen /
-resizeable manifest flags this version adds are what make that smooth on a tablet.
-When Sightline is fully backgrounded it pauses analysis and posts a notification
-telling the user to bring it back (or use split-screen). True always-on background
-analysis would require moving the camera + ML pipeline to native CameraX — noted
-as a future step in the project docs.
+- A **camera-type foreground service** (`BackgroundMonitorService`) + **CameraX**
+  (headless) + **ML Kit Face Detection** (bundled, on-device, offline).
+- Seamless hand-off: the rich WebView UI runs while the app is open; the instant
+  it's backgrounded during a session, the WebView releases the camera and the
+  native service takes over, firing the same loud alerts. On return, the app
+  takes the camera back and folds the background breaches into the session report.
+- Self-calibrates at hand-off from the last on-screen distance, so no second
+  calibration is needed.
+- Works because video apps don't use the camera, so there's no contention.
 
-### 2. Session reports + history
-Every session (≥5s) is scored and saved on-device. At the end you get a detailed
-report — grade, averages, distance-over-time and blink-over-time trend charts, a
-breach timeline, and a takeaway — plus an **Export** (share/download) button. The
-clock icon opens **History**: all past sessions with sparklines, tap to reopen any
-report. Stored in `localStorage` (`sightline_history`, capped at 50 sessions); no
-data leaves the device.
+Toggle: **Configure → Keep monitoring in background**. On first enable it asks to
+exempt Sightline from battery optimisation (needed on Samsung).
 
-### 3. Tablet compatibility (e.g. Galaxy Tab S10 Lite)
-- **MediaPipe GPU→CPU fallback.** The most common reason the app failed to start
-  on tablets was the GPU delegate failing to initialise in the WebView; it now
-  retries on CPU automatically.
-- **Responsive layout** — a two-column layout on wide/landscape screens, larger
-  gauge, and no fixed phone width.
-- **Camera constraint fallback** — if `facingMode:'user'` + resolution is rejected,
-  it retries with a permissive `{ video: true }`.
-- **Manifest** — large-screen support + `resizeableActivity` (also enables
-  split-screen), front camera marked non-required so it installs broadly.
+Trade-offs (by design): a persistent **green camera dot**, higher battery, and the
+one-time Samsung battery setting.
 
-## What works where
+### Tablet reliability (Galaxy Tab S10 Lite)
+The earlier "won't work on the tablet" problem had two deeper causes, now fixed:
 
-| Capability | Web | Android (native) | iOS (native) |
-|---|---|---|---|
-| Distance calibration / config | yes | yes | yes |
-| Blink-rate safe config | yes | yes | yes |
-| Session duration + auto-end | yes | yes | yes |
-| Loud alert (distance + blink) | tone+vibrate (foreground) | tone + sound notification | tone + sound notification |
-| Session report + history | yes | yes | yes |
-| Keep session alive in background | — (tab must stay open) | yes (foreground service) | limited (OS suspends) |
-| Monitor while another app is in front | split-screen only | split-screen only | split-screen only |
+1. **Offline / CDN failure killed the whole app.** The face engine was loaded
+   with a *static* `import` from a CDN; if the tablet was offline or the CDN was
+   blocked, that import threw and **every button went dead**. It's now a
+   **dynamic, offline-first load**: the engine + model are **bundled into the APK**
+   under `www/vendor` (done automatically in the cloud build) and loaded with no
+   network; a plain browser falls back to the CDN. A failed load no longer breaks
+   the UI — it shows a clear message.
+2. **Camera permission wasn't requested natively.** Relying on the WebView's
+   `getUserMedia` to prompt doesn't reliably show the OS dialog on Samsung.
+   `MainActivity` now requests **CAMERA + notifications on launch**.
+
+Also kept from before: MediaPipe **GPU→CPU fallback**, responsive
+landscape/large-screen layout, permissive `getUserMedia` fallback, and
+large-screen + `resizeableActivity` in the manifest.
+
+### Session reports + history
+Unchanged and still on-device: end-of-session report (grade, averages, trend
+charts, breach timeline, export) and a History screen. Background breaches are
+merged into the session so the report is complete.
+
+## Offline bundle (how it works)
+The GitHub Actions workflow runs, after `npm install`:
+```
+cp node_modules/@mediapipe/tasks-vision/{wasm,vision_bundle.mjs}  www/vendor/tasks-vision/
+curl -L -o www/vendor/face_landmarker.task  <mediapipe model URL>
+```
+then `cap sync` packs `www/` (including `vendor/`) into the APK. To do it locally,
+run those two lines before `npx cap sync android`.
 
 ## Notes
-- **Offline MediaPipe:** the app loads the face model from a CDN on first run. To
-  ship fully offline, download the `tasks-vision` wasm bundle +
-  `face_landmarker.task` into `www/` and repoint the two URLs in `index.html`.
-- **Background loudness:** the WebAudio tone needs the app foregrounded. When
-  backgrounded, the native notification (`sound: 'default'` on a high-importance
-  channel) is what alerts the user.
-- **Foreground service type** is `dataSync` (declared in the manifest) — it keeps
-  the process alive and shows the notification; it does not itself grant
-  background camera frames (see the honest limit above).
+- The alarm tone in the background is played natively (ML Kit service) via the
+  alarm ringtone + vibration + a high-importance notification.
+- iOS cannot use the camera in the background (OS limit), so background monitoring
+  is Android-only; iOS keeps foreground monitoring + reports.

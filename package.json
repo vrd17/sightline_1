@@ -2,7 +2,7 @@
   "name": "sightline-native",
   "version": "1.0.0",
   "private": true,
-  "description": "Sightline — screen-distance & eye-health guardian (Capacitor native shell)",
+  "description": "Sightline \u2014 screen-distance & eye-health guardian (Capacitor native shell)",
   "scripts": {
     "add:android": "cap add android",
     "add:ios": "cap add ios",
@@ -15,7 +15,8 @@
     "@capacitor/android": "^6.1.2",
     "@capacitor/core": "^6.1.2",
     "@capacitor/ios": "^6.1.2",
-    "@capacitor/local-notifications": "^6.1.0"
+    "@capacitor/local-notifications": "^6.1.0",
+    "@mediapipe/tasks-vision": "0.10.12"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.1.2"

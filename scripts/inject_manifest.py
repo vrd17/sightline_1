@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Idempotently patch the generated AndroidManifest.xml:
-  - camera / notification / internet / foreground-service / wake-lock permissions
+  - camera / notification / internet / foreground-service(camera) / wake-lock /
+    battery-exemption permissions
   - large-screen support + resizeableActivity (tablets + split-screen)
-  - the Sightline foreground service declaration
+  - the camera-type BackgroundMonitorService declaration
 Targeted, guarded inserts — Capacitor's generated manifest is simple and stable."""
 import sys, re, io
 
@@ -15,7 +16,8 @@ PERMS = [
     '<uses-permission android:name="android.permission.WAKE_LOCK" />',
     '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
     '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
-    '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />',
+    '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />',
+    '<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />',
     '<uses-feature android:name="android.hardware.camera" android:required="false" />',
     '<uses-feature android:name="android.hardware.camera.front" android:required="false" />',
 ]
@@ -24,9 +26,9 @@ SUPPORTS = ('<supports-screens android:smallScreens="true" android:normalScreens
             'android:largeScreens="true" android:xlargeScreens="true" android:anyDensity="true" />')
 
 SERVICE = ('        <service\n'
-           '            android:name=".SightlineForegroundService"\n'
+           '            android:name=".BackgroundMonitorService"\n'
            '            android:exported="false"\n'
-           '            android:foregroundServiceType="dataSync" />\n')
+           '            android:foregroundServiceType="camera" />\n')
 
 with io.open(manifest_path, encoding="utf-8") as f:
     m = f.read()
@@ -42,19 +44,22 @@ if to_add:
 else:
     print("   = permissions/support already present")
 
-# 2) resizeableActivity on <application> (enables tablet split-screen)
+# 2) resizeableActivity on <application>
 if 'android:resizeableActivity' not in m:
     m = m.replace('<application', '<application android:resizeableActivity="true"', 1)
     print("   + added resizeableActivity")
 else:
     print("   = resizeableActivity already present")
 
-# 3) foreground service inside <application>
-if 'SightlineForegroundService' not in m:
+# 3) camera foreground service inside <application>
+if 'BackgroundMonitorService' not in m:
     m = m.replace('</application>', SERVICE + '    </application>', 1)
-    print("   + added foreground service")
+    print("   + added BackgroundMonitorService (camera)")
 else:
-    print("   = foreground service already present")
+    print("   = BackgroundMonitorService already present")
+
+# 3b) remove the old dataSync service if a previous version added it
+m = re.sub(r'\s*<service\s+android:name="\.SightlineForegroundService".*?/>', '', m, flags=re.S)
 
 with io.open(manifest_path, "w", encoding="utf-8") as f:
     f.write(m)
