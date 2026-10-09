@@ -12,16 +12,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
@@ -35,7 +35,21 @@ jobs:
         run: npm run patch:android
 
       - name: Bundle MediaPipe for offline use
-        run: |
-          mkdir -p www/vendor/tasks-vision
-          cp -r node_modules/@mediapipe/tasks-vision/wasm www/vendor/tasks-vision/wasm
-          cp node_modules/@mediapipe/tasks-vision/vision_bundle.mjs
+        run: mkdir -p www/vendor/tasks-vision && cp -r node_modules/@mediapipe/tasks-vision/wasm www/vendor/tasks-vision/ && cp node_modules/@mediapipe/tasks-vision/vision_bundle.mjs www/vendor/tasks-vision/ && curl -L --fail --retry 3 -o www/vendor/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task && ls -lhR www/vendor
+
+      - name: Sync web assets
+        run: npx cap sync android
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sightline-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
